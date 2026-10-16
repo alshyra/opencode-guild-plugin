@@ -7,7 +7,7 @@ import type { MemoryStore } from "./memory"
 import { type Peer, describePeer } from "./peers"
 import { BUS_ID, renderPeerMessage, stripPeerEnvelope, type PeerMessageKind, type PeerMessageMeta } from "./envelope"
 import { describeActivity } from "./activity"
-import { MAX_TAGS, describeEntry, selectEntries, type MemoryDigest, type MemoryEntry } from "./memory"
+import { MAX_TAGS, describeEntry, isStale, selectEntries, type MemoryDigest, type MemoryEntry } from "./memory"
 import { compressMemory, type CompressReport } from "./compress"
 import { log, truncate, warn } from "./log"
 
@@ -524,7 +524,11 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
         }
         const tags = (Array.isArray(input.tags) ? input.tags : []).map((tag) => String(tag).trim()).filter(Boolean)
         const limit = clamp(input.limit, 1, 100, deps.options.activityLines * 2)
-        const entries = selectEntries(all, input.query, tags, limit)
+        const now = Date.now()
+        const entries = selectEntries(all, input.query, tags, limit, {
+          now,
+          halfLifeDays: deps.options.memoryHalfLifeDays,
+        })
         if (entries.length === 0) {
           return {
             content: `No entry matches in the ${all.length} entries of ${where}. Call memory_read without a query to see them all.`,
@@ -533,6 +537,13 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
         const filter = [input.query ? `query "${input.query}"` : "", tags.length ? `tags ${tags.join(", ")}` : ""]
           .filter(Boolean)
           .join(", ")
+        const stale = all.filter((entry) => isStale(entry, now, deps.options.memoryStaleDays)).length
+        const staleHint =
+          stale > 0
+            ? [
+                `${stale} stale ${stale === 1 ? "entry was" : "entries were"} never reinforced since ${deps.options.memoryStaleDays} days: memory_compress or memory_forget them, or reinforce them if they still matter.`,
+              ]
+            : []
         const compressHint =
           deps.options.memoryCompressAfter > 0 && all.length >= deps.options.memoryCompressAfter
             ? [
@@ -541,12 +552,13 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
             : []
         return {
           content: [
-            `Folder memory of ${where}: ${entries.length} of ${all.length} entries${filter ? ` (${filter})` : ""}, pinned first then most recent.`,
-            ...entries.map((entry) => `- ${describeEntry(entry, 400)}`),
+            `Folder memory of ${where}: ${entries.length} of ${all.length} entries${filter ? ` (${filter})` : ""}, pinned first then weight and recency.`,
+            ...entries.map((entry) => `- ${describeEntry(entry, 400, now, deps.options.memoryStaleDays)}`),
             "Record more with memory_write, drop a wrong entry with memory_forget(target=<id>).",
+            ...staleHint,
             ...compressHint,
           ].join("\n"),
-          metadata: { total: all.length, returned: entries.length, ids: entries.map((entry) => entry.id) },
+          metadata: { total: all.length, returned: entries.length, stale, ids: entries.map((entry) => entry.id) },
         }
       },
     })

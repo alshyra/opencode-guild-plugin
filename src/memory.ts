@@ -16,6 +16,14 @@ import { log, truncate, warn } from "./log"
 /** How many pre-rewrite snapshots stay in `history/`. */
 const ARCHIVE_KEEP = 5
 
+const DAY_MS = 86_400_000
+
+/** Default half-life of a fact that is never seen again, in days. */
+export const DEFAULT_HALF_LIFE_DAYS = 30
+
+/** Default age after which a never-reinforced fact is called stale, in days. */
+export const DEFAULT_STALE_DAYS = 45
+
 /** One durable fact, decision or convention recorded by a session. */
 export interface MemoryEntry {
   readonly id: string
@@ -438,19 +446,39 @@ export function matchEntries(entries: readonly MemoryEntry[], target: string): r
 
 /**
  * Weight a fact earned: repeated writes, plus the entries a merge folded into
- * it. Pinned entries are handled separately: a standing rule outranks any count.
+ * it, halved every `halfLifeDays` without being seen again. The counters never
+ * decay — only the ranking does, so a fact that keeps coming back stays on top
+ * and an old one slowly loses its place. `halfLifeDays: 0` returns the raw
+ * weight. Pinned entries are handled separately: a standing rule outranks any
+ * count.
  */
-export function memoryWeight(entry: MemoryEntry): number {
-  return (entry.hits ?? 0) + (entry.mergedFrom?.length ?? 0)
+export function memoryWeight(entry: MemoryEntry, now = Date.now(), halfLifeDays = DEFAULT_HALF_LIFE_DAYS): number {
+  const raw = (entry.hits ?? 0) + (entry.mergedFrom?.length ?? 0)
+  if (halfLifeDays <= 0) return raw
+  const age = Math.max(0, now - entry.at)
+  return raw * 0.5 ** (age / (halfLifeDays * DAY_MS))
 }
 
-/** Pinned first, then the weight the fact earned, then the most recent. */
+/**
+ * A candidate for housekeeping, never a deletion: a note nobody ever came back
+ * to, old enough to be suspect. A pinned entry is never stale, and neither is an
+ * entry that was reinforced — coming back is what keeps a fact alive.
+ */
+export function isStale(entry: MemoryEntry, now = Date.now(), staleDays = DEFAULT_STALE_DAYS): boolean {
+  if (staleDays <= 0 || entry.pinned || (entry.hits ?? 0) > 0) return false
+  return now - entry.at > staleDays * DAY_MS
+}
+
+/** Pinned first, then the weight the fact earned (decayed), then the most recent. */
 export function selectEntries(
   entries: readonly MemoryEntry[],
   query: string | undefined,
   tags: readonly string[],
   limit: number,
+  ranking?: { readonly now?: number; readonly halfLifeDays?: number },
 ): readonly MemoryEntry[] {
+  const now = ranking?.now ?? Date.now()
+  const halfLifeDays = ranking?.halfLifeDays ?? DEFAULT_HALF_LIFE_DAYS
   const needle = query?.trim().toLowerCase()
   const wanted = tags.map((tag) => tag.trim().toLowerCase()).filter(Boolean)
   return entries
@@ -463,7 +491,7 @@ export function selectEntries(
     .sort(
       (left, right) =>
         Number(right.pinned) - Number(left.pinned) ||
-        memoryWeight(right) - memoryWeight(left) ||
+        memoryWeight(right, now, halfLifeDays) - memoryWeight(left, now, halfLifeDays) ||
         right.at - left.at,
     )
     .slice(0, limit)
@@ -475,20 +503,32 @@ export function weightMark(entry: MemoryEntry): string {
   return hits > 1 ? `×${hits} ` : ""
 }
 
-export function describeEntry(entry: MemoryEntry, maxText: number): string {
+export function describeEntry(
+  entry: MemoryEntry,
+  maxText: number,
+  now = Date.now(),
+  staleDays = DEFAULT_STALE_DAYS,
+): string {
   const tags = entry.tags.length ? ` (tags: ${entry.tags.join(", ")})` : ""
   const pin = entry.pinned ? "pinned, " : ""
+  const stale = isStale(entry, now, staleDays) ? "stale " : ""
   return (
-    `${entry.id} [${dateOf(entry.at)}, ${pin}${weightMark(entry)}from "${truncate(entry.title, 40)}"] ` +
+    `${stale}${entry.id} [${dateOf(entry.at)}, ${pin}${weightMark(entry)}from "${truncate(entry.title, 40)}"] ` +
     `${truncate(entry.text, maxText)}${tags}`
   )
 }
 
 /** Compact one-liner used by the injected block. */
-export function summarizeEntry(entry: MemoryEntry, maxText: number): string {
+export function summarizeEntry(
+  entry: MemoryEntry,
+  maxText: number,
+  now = Date.now(),
+  staleDays = DEFAULT_STALE_DAYS,
+): string {
   const tags = entry.tags.length ? ` (${entry.tags.join(", ")})` : ""
   const pin = entry.pinned ? "pinned " : ""
-  return `- ${pin}${weightMark(entry)}[${dateOf(entry.at)}] ${truncate(entry.text, maxText)}${tags}`
+  const stale = isStale(entry, now, staleDays) ? "stale " : ""
+  return `- ${stale}${pin}${weightMark(entry)}[${dateOf(entry.at)}] ${truncate(entry.text, maxText)}${tags}`
 }
 
 export function dateOf(at: number): string {

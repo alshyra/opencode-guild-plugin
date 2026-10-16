@@ -57,6 +57,13 @@ Both entry files must stay at the repository root: the loader resolves a plugin 
   same `resolveOptions`, so the TUI and the server can never disagree about the maximum.
 - `hits` is written to disk as soon as it reaches 1. Parsing it back with a `> 1` filter looks harmless and
   breaks the counter silently: the store would restart from zero at every reinforcement.
+- The decay is a *ranking* concern: `memoryWeight(entry, now, halfLifeDays)` is time-dependent, so every caller
+  and every test passes `now` explicitly. The counters on disk never decay — a fact that stops coming back
+  loses its place, not its history.
+- `isStale` is a report, never a deletion: pinned entries and reinforced entries are never stale, and nothing
+  removes a stale entry on its own. The same `now`/`halfLifeDays`/`staleDays` travel from `resolveOptions` into
+  `selectEntries`, `describeEntry` and `summarizeEntry`, so the injected block, `memory_read` and the TUI
+  cannot rank or mark differently.
 - `#rewrite` archives by default because a rewrite is what can lose an entry. A reinforcement and a promotion
   pass `archive: false`: they only add weight or a flag, so `history/` keeps meaning "a state where something
   disappeared". A demotion archives.
@@ -102,7 +109,7 @@ There is no test suite: verify against a live service.
    merge) are covered by a stub context instead of a model call.
 7. Weight and elevation: `bun ~/tmp/oc/mem-weight-check.ts` drives `MemoryStore` directly (no service, no
    model): reinforcement, disk round-trip of `hits`, weight inherited by a merge, the ranking used by the
-   injected block, promote/demote and their archive behaviour.
+   injected block, decay and `isStale` with an injected `now`, promote/demote and their archive behaviour.
 8. Test drivers used during development: `~/tmp/oc/bus-test*.py` (peers), `~/tmp/oc/mem-live-test.py`
    (memory), `~/tmp/oc/mem-compress-unit.ts` and `~/tmp/oc/mem-compress-refusals.ts` (pure functions and
    compression branches, run with `HOME=<sandbox> bun run`), `~/tmp/oc/mem-compress-live.py` and

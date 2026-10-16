@@ -141,10 +141,18 @@ back:
 - **Reinforcement** — writing the *same text* again does not add an entry: it counts (`hits`), moves the entry
   up, and writes nothing to `history/` (a reinforcement loses nothing). A merge folds the weights of its
   parents into the consolidated entry, so a fact does not lose its standing by being deduplicated.
-- **Ranking** — pinned first, then the weight (`hits` + the entries a merge folded in), then the most recent.
-  That order decides what fits in the injected block and what falls out of it: the triage is in the window,
-  not in a separate score to read.
-- **The mark** — `memory_read`, the injected block and the `/memory` dialog show `×N` once a fact came back.
+- **Ranking** — pinned first, then the decayed weight (`hits` + the entries a merge folded in), then the most
+  recent. That order decides what fits in the injected block and what falls out of it: the triage is in the
+  window, not in a separate score to read.
+- **Decay** — what fades is the *ranking*, never the counter: an entry is worth `hits + mergedFrom` halved
+  every `memoryHalfLifeDays` (default 30) without being seen again. A ×3 from last month still beats a fresh
+  ×1, and loses to a fresh ×3. `memoryHalfLifeDays: 0` ranks on the raw weight.
+- **Stale** — a note nobody ever came back to, older than `memoryStaleDays` (default 45), is marked `stale` in
+  `memory_read` and in the injected block, and counted in the read report. It is a candidate for
+  `memory_compress` or `memory_forget`, never an automatic deletion; writing the same text again reinforces it
+  and clears the mark. `memoryStaleDays: 0` turns the notion off.
+- **The mark** — `memory_read`, the injected block and the `/memory` dialog show `×N` once a fact came back,
+  and `stale` on a note that was never seen again since it was written.
 - **Elevation** — `memory_promote(target, pin?)` flips the standing-rule flag. Promoting asks the user first
   (permission action `memory.promote`) because a pinned entry goes into *every* session's prompt. Demoting
   needs no approval and archives the file: it is the only direction that loses something.
@@ -202,6 +210,8 @@ on the same host as the server plugin, which has no HTTP surface of its own.
         "memoryMaxEntries": 500,
         "memoryMaxChars": 2000,
         "memoryCompressAfter": 60,
+        "memoryHalfLifeDays": 30,
+        "memoryStaleDays": 45,
         "memoryPromoteAfter": 3,
         "debug": false
       }

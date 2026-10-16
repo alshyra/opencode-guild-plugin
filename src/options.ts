@@ -1,3 +1,5 @@
+import { DEFAULT_HALF_LIFE_DAYS, DEFAULT_STALE_DAYS } from "./memory"
+
 export interface SessionBusOptions {
   /** Ask the user before the first message to a given session. */
   readonly permission: "ask" | "allow" | "deny"
@@ -33,6 +35,10 @@ export interface SessionBusOptions {
   readonly memoryMaxChars: number
   /** Suggest a compression once the memory holds this many entries. 0 disables the nudge. */
   readonly memoryCompressAfter: number
+  /** Days after which a fact never seen again counts for half as much. 0 disables the decay. */
+  readonly memoryHalfLifeDays: number
+  /** Days after which a never-reinforced fact is reported as stale. 0 disables the notion. */
+  readonly memoryStaleDays: number
   /** Suggest elevating a fact to a standing rule once it came back this many times. */
   readonly memoryPromoteAfter: number
 }
@@ -58,6 +64,8 @@ export const defaultOptions: SessionBusOptions = {
   memoryMaxEntries: 500,
   memoryMaxChars: 2000,
   memoryCompressAfter: 60,
+  memoryHalfLifeDays: DEFAULT_HALF_LIFE_DAYS,
+  memoryStaleDays: DEFAULT_STALE_DAYS,
   memoryPromoteAfter: 3,
 }
 
@@ -100,6 +108,8 @@ export function resolveOptions(raw: Readonly<Record<string, unknown>>): SessionB
     memoryMaxEntries: positive(raw["memoryMaxEntries"], defaultOptions.memoryMaxEntries),
     memoryMaxChars: positive(raw["memoryMaxChars"], defaultOptions.memoryMaxChars),
     memoryCompressAfter: nonNegative(raw["memoryCompressAfter"], defaultOptions.memoryCompressAfter),
+    memoryHalfLifeDays: nonNegative(raw["memoryHalfLifeDays"], defaultOptions.memoryHalfLifeDays),
+    memoryStaleDays: nonNegative(raw["memoryStaleDays"], defaultOptions.memoryStaleDays),
     memoryPromoteAfter: positive(raw["memoryPromoteAfter"], defaultOptions.memoryPromoteAfter),
   }
 }
