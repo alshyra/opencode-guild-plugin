@@ -6,7 +6,7 @@
  * system temp directory, and removes both that folder and the store it hashes
  * to (`~/.opencode/guild/<sha1 of the folder>/`).
  *
- * Run: cd /devops/home/asavajols/workspace/opencode-guild && bun test tests/memory.test.ts
+ * Run: bun test tests/memory.test.ts
  */
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs"
@@ -554,8 +554,8 @@ describe("formatting and helpers", () => {
   })
 
   test("the store lives outside the working folder, keyed by its path", () => {
-    const first = "/devops/home/asavajols/tmp/offline-a"
-    const second = "/devops/home/asavajols/tmp/offline-b"
+    const first = "/workspace/offline-a"
+    const second = "/workspace/offline-b"
     expect(directoryKey(first)).toBe(directoryKey(first))
     expect(directoryKey(first)).not.toBe(directoryKey(second))
     expect(directoryKey(first)).toMatch(/^[0-9a-f]{40}$/)

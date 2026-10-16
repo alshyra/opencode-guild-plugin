@@ -23,24 +23,30 @@ the next session would otherwise rediscover. The OpenCode equivalent of Claude C
 
 ## Install
 
-Add the plugin to the global OpenCode configuration (`~/.config/opencode/opencode.jsonc`):
+The plugin runs from a checkout of this repository:
+
+```sh
+git clone https://github.com/alshyra/opencode-guild-plugin.git
+cd opencode-guild-plugin && bun install
+```
+
+Then point OpenCode at that directory in the global configuration (`~/.config/opencode/opencode.jsonc`):
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
-    { "package": "/devops/home/asavajols/workspace/opencode-guild" }
+    { "package": "/absolute/path/to/opencode-guild-plugin" }
   ]
 }
 ```
 
-Then reload the location, or restart the service (`opencode service restart`). The TUI half needs a TUI
-restart (quit and reopen `opencode`).
+`package` accepts a directory (absolute, relative, or `file:///…`) or an npm package name, and must resolve to
+a directory whose **root** holds `index.ts` and `tui.tsx` — which is why both live at the repository root and
+re-export `src/*`. See the [plugins guide](https://opencode.ai/v2/docs/build/plugins).
 
-Dev on another machine: clone the repo, run `bun install`, point `package` at your checkout.
-
-The loader resolves a plugin directory to `index.ts` and `tui.tsx` **at its root**: that is why `index.ts`
-and `tui.tsx` re-export `src/*`. Removing them breaks loading.
+Reload the location, or restart the service (`opencode service restart`). The TUI half needs a TUI restart
+(quit and reopen `opencode`).
 
 ### Activation
 
@@ -217,7 +223,7 @@ plugin, which has no HTTP surface of its own.
 {
   "plugins": [
     {
-      "package": "/devops/home/asavajols/workspace/opencode-guild",
+      "package": "/absolute/path/to/opencode-guild-plugin",
       "options": {
         "permission": "ask",            // ask | allow | deny
         "scope": "directory",           // directory (same folder) | project (all checkouts)
