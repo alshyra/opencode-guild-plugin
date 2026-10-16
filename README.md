@@ -62,6 +62,8 @@ the TUI picks up `tui.tsx` only at its own startup.
 | `peers_list(include_idle?)` | Other sessions of the same folder: number, session id, title, agent, running/idle. |
 | `peers_send(target, message, expect_reply?)` | Send a note. `expect_reply` asks the peer to answer. |
 | `peers_ask(target, question, timeout_seconds?)` | Ask a question and **wait for the answer** (see below). |
+| `peers_delegate(target, task, context?)` | Hand a task over **asynchronously** and keep working: the peer's report wakes you when it comes back. |
+| `peers_delegations()` | What you delegated and are still waiting on. |
 | `peers_handoff(target, task, context?)` | Hand a work item over: the peer is told to treat it as a task from your user. |
 | `peers_activity(target, messages?)` | What the peer is doing: recent conversation, tools it ran, files its last turn changed, uncommitted state of its directory. |
 | `memory_write(text, tags?, key?, pinned?)` | Record a durable fact, decision or convention in the folder's memory. |
@@ -85,6 +87,15 @@ A peer is expected to close the loop: answer a question, and after a request it 
 one short line back when the work is done or blocked. That report is what wakes the requester — `peers_ask`
 waits for a message, not for a status.
 
+### peers_delegate and the wake
+
+`peers_ask` blocks the caller's turn until the answer arrives, which is wrong for work that can run in
+parallel with yours. `peers_delegate` is the asynchronous counterpart: it delivers the task, returns at once,
+and registers the exchange (`dlg_…`). The peer is told to report back, and the report is an ordinary peer
+delivery — sent with `resume: true`, so it **wakes the requester** instead of being polled. `peers_delegations`
+lists what is still outstanding, and a message from the asked peer resolves the matching delegation. Use
+`peers_ask` only when you cannot continue without the answer right now; otherwise delegate and keep working.
+
 ## Memory of the folder
 
 Sessions of a folder share a long-term memory: a place for the facts and decisions the next session would
@@ -97,7 +108,11 @@ otherwise rediscover — a contract that changed, a command that works, a choice
   a no-op; writing with a `key` replaces the previous entry of that key (for a value that evolves); a `pinned`
   entry survives the size cap and comes first in the injected block.
 - **Injection** — the `context` hook appends the first `memoryInjectLines` entries (pinned first, then the
-  weightiest, then the most recent), truncated per entry. Nothing is injected while the memory is empty.
+  weightiest, then the most recent), truncated per entry, plus a compact **index of the topics** the memory
+  carries and a count of the entries stored beyond the visible list. The block is deliberately directive: it
+  tells the session to `memory_read(query=…)` *before it plans or rediscovers something*, and it closes on
+  "use them, and check anything that may have changed" rather than on "these are context to verify". Nothing
+  is injected while the memory is empty.
 - Size — past `memoryMaxEntries` the oldest unpinned entries are dropped, rewriting the file.
   `rm -rf ~/.opencode/session-bus/<hash>` forgets a folder entirely.
 - **History** — every rewrite (a key replaced, a `forget`, a rewrite, a compression) first archives the
@@ -277,4 +292,5 @@ not. `memory_write(pinned: true)` and `memory_promote` both pass through it.
 - Coordination only: it does not isolate working copies. Use worktrees for that — and remember that each
   worktree has its own memory.
 - `peers_ask` blocks the caller's turn while it waits, so its default timeout is 180s and a peer that is
-  blocked on a permission prompt is reported in the answer.
+  blocked on a permission prompt is reported in the answer. `peers_delegate` avoids the block: it returns at
+  once and the report resumes the caller like any other incoming message.

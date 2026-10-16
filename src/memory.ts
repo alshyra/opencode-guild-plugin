@@ -497,6 +497,32 @@ export function selectEntries(
     .slice(0, limit)
 }
 
+/** How many topics the injected block advertises. */
+export const MAX_TOPICS = 10
+
+/**
+ * The tags the memory actually carries, most used first: what a session can
+ * expect to find here, and the words worth searching with. Computed from the
+ * whole memory, not from the handful of entries a capped block shows, so the
+ * index stays honest about what exists beyond the visible lines.
+ */
+export function topicsOf(
+  entries: readonly MemoryEntry[],
+  limit = MAX_TOPICS,
+): readonly (readonly [string, number])[] {
+  const counts = new Map<string, number>()
+  for (const entry of entries) {
+    for (const tag of entry.tags) {
+      const key = tag.trim().toLowerCase()
+      if (!key) continue
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+  }
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, limit)
+}
+
 /** `×3` when a fact came back, so the weight is visible wherever entries are listed. */
 export function weightMark(entry: MemoryEntry): string {
   const hits = entry.hits ?? 0

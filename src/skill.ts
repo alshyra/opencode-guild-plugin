@@ -11,7 +11,9 @@ Several OpenCode sessions can work in the same project at the same time. This sk
 
 - \`peers_list(include_idle?)\`: the other root sessions in the same folder. Gives each peer a number, a session id, a title, its agent, whether it is working right now, and its checkout directory.
 - \`peers_send(target, message, expect_reply?)\`: deliver a plain-text note to one of them. The peer reads it as an incoming message and can reply with the same tool.
-- \`peers_ask(target, question, timeout_seconds?)\`: ask a peer a question and wait for its answer (default 180s).
+- \`peers_ask(target, question, timeout_seconds?)\`: ask a peer a question and wait for its answer (default 180s), blocking your turn.
+- \`peers_delegate(target, task, context?)\`: hand a task over and keep working — the asynchronous counterpart of peers_ask. The peer's report wakes you when it arrives. Prefer it over peers_ask for anything that can run in parallel.
+- \`peers_delegations()\`: list the tasks you delegated and are still waiting on.
 - \`peers_handoff(target, task, context?)\`: hand a work item over. The peer is told to treat it as a task from your user.
 - \`peers_activity(target, messages?)\`: what a peer is doing: recent conversation, tools it ran, files its last turn changed, uncommitted state of its directory.
 `
@@ -19,7 +21,7 @@ Several OpenCode sessions can work in the same project at the same time. This sk
 const MEMORY = `
 ## Memory of the folder
 
-The folder keeps a long-term memory shared by every session that works there, past and future. The most recent entries are already in your context.
+The folder keeps a long-term memory shared by every session that works there, past and future. A summary is already in your context, along with the topics it covers. Before you plan or rediscover something, search it with \`memory_read(query="<keyword>")\`: it is where an earlier session recorded the command that works, the contract it changed, the choice the user made, the dead end it hit.
 
 - \`memory_write(text, tags?, key?, pinned?)\`: record a durable fact, decision or convention.
 - \`memory_read(query?, tags?, limit?)\`: search it by text or tag.

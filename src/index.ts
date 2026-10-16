@@ -6,6 +6,7 @@ import { createApi } from "./api"
 import { resolveEndpoint } from "./service"
 import { Registry } from "./registry"
 import { MemoryStore } from "./memory"
+import { Delegations } from "./delegations"
 import { isSessionID, type SessionLike } from "./peers"
 import { Guards } from "./guards"
 import { resolveOptions } from "./options"
@@ -47,7 +48,7 @@ export default Plugin.define({
       maxTextChars: options.memoryMaxChars,
       ttlMs: options.cacheTtlSeconds * 1000,
     })
-    const deps: Deps = { ctx, registry, guards: new Guards(), options, api, memory }
+    const deps: Deps = { ctx, registry, guards: new Guards(), options, api, memory, delegations: new Delegations() }
 
     const controller = new AbortController()
     void watchEvents(ctx, registry, controller.signal)

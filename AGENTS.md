@@ -17,8 +17,9 @@ Both entry files must stay at the repository root: the loader resolves a plugin 
 - `src/service.ts` — reads the OpenCode service registration file to build the HTTP endpoint + auth headers.
 - `src/api.ts` — minimal `GET` client over that endpoint.
 - `src/peers.ts` — pure peer types, selection and formatting, shared by the server and the TUI half.
+- `src/delegations.ts` — the outstanding asynchronous delegations: register, resolve on the peer's report, list.
 - `src/registry.ts` — session discovery (`/api/session`, `/api/session/active`) with a short TTL cache.
-- `src/tools.ts` — the ten tools: target resolution, permission assert, rate limit, hop counter, ask loop.
+- `src/tools.ts` — the twelve tools: target resolution, permission assert, rate limit, hop counter, ask loop.
 - `src/memory.ts` — the folder's long-term memory: file layout, JSONL parsing, atomic replace, archives, cap.
 - `src/compress.ts` — the consolidation: prompt, tolerant JSON reader, `ctx.generate.text` call and report.
 - `src/activity.ts` — the `peers_activity` report (transcript, tools, session diff, working copy).
@@ -43,6 +44,12 @@ Both entry files must stay at the repository root: the loader resolves a plugin 
   step ends. `peers_ask` must therefore read `/api/session/{self}/inbox` while it blocks, not only the
   transcript (the transcript only sees it at the next step boundary). `peers_ask` returning also aborts the
   tool through `context.signal`, so the loop reads once more before giving up.
+- `peers_delegate` is the asynchronous counterpart, and the default for work that can run in parallel: it
+  delivers, registers a `Delegations` entry and returns at once. The wake-up is not a polling loop — every
+  delivery already goes out with `resume: true`, so the peer's report resumes the requester. `deliver()`
+  resolves the matching delegation when the asked peer writes back (direction: `resolve(receiver, sender)`),
+  and `peers_delegate` registers *before* delivering so a fast report cannot race an empty registry. The
+  registry is in memory only and bounded: losing it costs visibility, never a delivery.
 - Peer discovery is project-scoped at the API level and folder-filtered in `selectPeers`; `scope: "project"`
   widens it to every checkout of the project.
 - OpenCode's default permission policy allows everything, so `permission: "ask"` only prompts when a
@@ -57,6 +64,11 @@ Both entry files must stay at the repository root: the loader resolves a plugin 
   same `resolveOptions`, so the TUI and the server can never disagree about the maximum. It must also pass the
   ranking options (`now`, `halfLifeDays`) to `selectEntries`: without them the gauge would rank without decay
   while the injected block decays, and the two would contradict each other.
+- The injected memory block is **directive on purpose**: `renderMemoryBlock` owns the `selectEntries` call (the
+  only caller left), adds the topic index (`topicsOf`) and the count of entries beyond the visible list, gives a
+  `memory_read` recall trigger, and closes on "use them". A block that only lists entries and says "context to
+  verify" is read as wallpaper and ignored; the point of the hook is to make the memory *actionable*. Keep the
+  safety (verify what may have changed) without the dismissive valence that makes a session skip it.
 - Staleness has a single implementation (`isStale` in `src/memory.ts`): the TUI imports it rather than
   recomputing the predicate from `at`/`hits`.
 - `hits` is written to disk as soon as it reaches 1. Parsing it back with a `> 1` filter looks harmless and
@@ -73,9 +85,11 @@ Both entry files must stay at the repository root: the loader resolves a plugin 
   disappeared". A demotion archives.
 - The folder memory is one file per folder, `~/.opencode/session-bus/<sha1 of the folder>/memory.jsonl`, never
   inside the project: a folder is a checkout, so worktrees do not share it. Writes append; a rewrite (key
-  replaced, cap reached, entry forgotten) always re-reads the file first and goes through `tmp + rename`, so a
-  second service working in the same folder cannot lose an append. `memory_read` and the injected block read
-  the same snapshot, cached for `cacheTtlSeconds`; `memory_write` and `memory_forget` always read from disk.
+  replaced, cap reached, entry forgotten) re-reads the file first and goes through `tmp + rename`. Within one
+  service the store is fully synchronous, so two writes cannot interleave; across two services on the same host
+  the re-read narrows the window but does not close it, and that setup is out of scope (the README documents a
+  single shared server). `memory_read` and the injected block read the same snapshot, cached for
+  `cacheTtlSeconds`; `memory_write` and `memory_forget` always read from disk.
 - Nothing in this plugin may break a session, memory included: every file operation is wrapped and a failure
   only warns once, then the folder behaves as if it had no memory.
 - Compression never sees the pinned entries: the pool is filtered before the prompt, so an invariant holds by
@@ -91,9 +105,12 @@ Both entry files must stay at the repository root: the loader resolves a plugin 
 ```sh
 bun install
 bun run typecheck
+bun test
 ```
 
-There is no test suite: verify against a live service.
+`tests/` holds the offline suites for the pure modules (`memory.ts`, `peers.ts`, and the `inject.ts` render
+functions): no service, no model call. Anything that needs a live server is still verified by hand against a
+running service, as below.
 
 1. Plugins load with the location; `location.reload` is not enough. Evict then re-open the location:
    `opencode api delete "/api/debug/location?location%5Bdirectory%5D=<dir>"` then

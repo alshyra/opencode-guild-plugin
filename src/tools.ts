@@ -9,7 +9,8 @@ import { BUS_ID, renderPeerMessage, stripPeerEnvelope, type PeerMessageKind, typ
 import { describeActivity } from "./activity"
 import { MAX_TAGS, describeEntry, isStale, selectEntries, type MemoryDigest, type MemoryEntry } from "./memory"
 import { compressMemory, type CompressReport } from "./compress"
-import { log, truncate, warn } from "./log"
+import type { Delegations } from "./delegations"
+import { humanAge, log, truncate, warn } from "./log"
 
 export interface Deps {
   readonly ctx: Ctx
@@ -18,6 +19,7 @@ export interface Deps {
   readonly options: SessionBusOptions
   readonly api: Api
   readonly memory: MemoryStore
+  readonly delegations: Delegations
 }
 
 interface Caller {
@@ -53,6 +55,12 @@ interface HandoffInput {
 interface ActivityInput {
   readonly target?: string
   readonly messages?: number
+}
+
+interface DelegateInput {
+  readonly target?: string
+  readonly task?: string
+  readonly context?: string
 }
 
 interface MemoryWriteInput {
@@ -330,6 +338,96 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
           return { content: report, metadata: { target: peer.id } }
         } catch (cause) {
           return { content: `Could not read ${peer.handle}'s activity: ${errorText(cause)}` }
+        }
+      },
+    })
+
+    editor.add({
+      name: "peers_delegate",
+      description:
+        "Delegate a task to another session of the same folder and keep working: this is the asynchronous counterpart of peers_ask. " +
+        "The task is delivered now, this call returns immediately, and the peer's report wakes you when it comes back. Use it for work " +
+        "that can run in parallel with yours. Use peers_handoff when you do not need to hear back, and peers_ask when you cannot continue " +
+        "without the answer right now.",
+      input: {
+        type: "object",
+        properties: {
+          target: TARGET_PROPERTY,
+          task: {
+            type: "string",
+            description: "What the peer must take on, phrased as an instruction. Be specific and self-contained.",
+          },
+          context: {
+            type: "string",
+            description: "Optional: current state, files, decisions or blockers the peer needs before starting.",
+          },
+        },
+        required: ["target", "task"],
+        additionalProperties: false,
+      },
+      execute: async (raw, context) => {
+        const input = (raw ?? {}) as DelegateInput
+        const task = String(input.task ?? "").trim()
+        const invalid = validateBody(deps, task)
+        if (invalid) return { content: invalid }
+        const peer = await resolveInputPeer(deps, context, input.target)
+        if (typeof peer === "string") return { content: peer }
+        const contextNote = String(input.context ?? "").trim()
+        const body = contextNote ? `${task}\n\nContext from my side:\n${contextNote}` : task
+        // Registered before delivery: a very fast report must find the
+        // delegation already there, not race it.
+        const delegation = deps.delegations.register({
+          requester: context.sessionID,
+          peer: peer.id,
+          task: body,
+        })
+        try {
+          const result = await deliver(deps, {
+            caller: callerOf(context),
+            peer,
+            body,
+            kind: "handoff",
+            expectReply: true,
+          })
+          return {
+            content:
+              `Delegated to ${peer.handle} "${peer.title}" (${delegation.id}, ${deliveryLabel(peer, result.delivery)}). ` +
+              `Continue with your own work: you will be woken when it reports back. ` +
+              `Check what is still outstanding with peers_delegations.`,
+            metadata: { to: peer.id, delegation: delegation.id, delivery: result.delivery, hop: result.hop },
+          }
+        } catch (cause) {
+          deps.delegations.forget(delegation.id)
+          return { content: errorText(cause) }
+        }
+      },
+    })
+
+    editor.add({
+      name: "peers_delegations",
+      description:
+        "List the tasks you delegated to peers with peers_delegate and have not been answered on yet. Use it to see what you are still " +
+        "waiting for before reporting to the user, or when a report arrives and you want to know what it answers.",
+      input: { type: "object", properties: {}, additionalProperties: false },
+      execute: async (_raw, context) => {
+        const pending = deps.delegations.pending(context.sessionID)
+        if (pending.length === 0) {
+          return { content: "No outstanding delegation: every task you handed to a peer has been answered." }
+        }
+        const now = Date.now()
+        const lines = pending.map((delegation) => {
+          const info = deps.registry.info(delegation.peer)
+          const handle = delegation.peer.slice(0, 14)
+          const who = info?.title ? `${handle} "${truncate(info.title, 50)}"` : handle
+          return `- ${delegation.id} -> ${who}, sent ${humanAge(delegation.at, now)}: ${truncate(delegation.task, 140)}`
+        })
+        return {
+          content: [
+            `Waiting on ${pending.length} delegation(s):`,
+            ...lines,
+            "Their replies wake you when they arrive; do not block on them with peers_ask.",
+          ].join("\n"),
+          metadata: { pending: pending.map((delegation) => delegation.id) },
         }
       },
     })
@@ -793,6 +891,11 @@ async function deliver(deps: Deps, input: DeliverInput): Promise<{ delivery: str
     resume: true,
   })
   deps.guards.noteDelivery(input.peer.id, input.caller.sessionID, hop)
+  // A message from a peer to a session that delegated something to it is the
+  // report that delegation was waiting for; the same delivery resumes the
+  // requester, so the wake-up and the bookkeeping happen together.
+  const answered = deps.delegations.resolve(input.peer.id, input.caller.sessionID)
+  if (answered) log(`delegation ${answered.id} answered by ${input.caller.sessionID}`)
   log(`delivered ${input.kind} ${sender.id} -> ${input.peer.id} (${delivered?.delivery ?? "unknown"}, hop ${hop})`)
   return { delivery: String(delivered?.delivery ?? "queued"), hop }
 }
