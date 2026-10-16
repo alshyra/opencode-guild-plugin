@@ -4,7 +4,8 @@ import { join } from "node:path"
 
 import { createApi } from "./api"
 import { resolveEndpoint } from "./service"
-import { Registry, isSessionID, type SessionInfo } from "./registry"
+import { Registry } from "./registry"
+import { isSessionID, type SessionLike } from "./peers"
 import { Guards } from "./guards"
 import { resolveOptions } from "./options"
 import { registerTools, type Deps } from "./tools"
@@ -40,7 +41,7 @@ export default Plugin.define({
         maxPeers: Math.max(options.maxPeers, 20),
       },
     )
-    const deps: Deps = { ctx, registry, guards: new Guards(), options }
+    const deps: Deps = { ctx, registry, guards: new Guards(), options, api }
 
     const controller = new AbortController()
     void watchEvents(ctx, registry, controller.signal)
@@ -82,7 +83,7 @@ async function watchEvents(ctx: Ctx, registry: Registry, signal: AbortSignal): P
         parentID: isSessionID(data["parentID"]) ? data["parentID"] : undefined,
         projectID: typeof data["projectID"] === "string" ? data["projectID"] : undefined,
         title: typeof data["title"] === "string" ? data["title"] : undefined,
-        location: data["location"] as SessionInfo["location"],
+        location: data["location"] as SessionLike["location"],
       })
     }
   } catch (cause) {

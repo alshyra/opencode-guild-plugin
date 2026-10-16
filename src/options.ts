@@ -1,7 +1,7 @@
 export interface SessionBusOptions {
   /** Ask the user before the first message to a given session. */
   readonly permission: "ask" | "allow" | "deny"
-  /** Which sessions count as peers. */
+  /** Which sessions count as peers: the same folder, or every checkout of the project. */
   readonly scope: "project" | "directory"
   /** Deliver the message into the peer's running turn, or park it in the queue. */
   readonly delivery: "steer" | "queue"
@@ -17,11 +17,15 @@ export interface SessionBusOptions {
   readonly maxMessagesPerMinute: number
   readonly maxHop: number
   readonly cacheTtlSeconds: number
+  /** Default wait for peers_ask, in seconds. */
+  readonly askTimeoutSeconds: number
+  /** Default number of entries peers_activity reports. */
+  readonly activityLines: number
 }
 
 export const defaultOptions: SessionBusOptions = {
   permission: "ask",
-  scope: "project",
+  scope: "directory",
   delivery: "steer",
   injectPeers: true,
   includeIdle: false,
@@ -32,6 +36,8 @@ export const defaultOptions: SessionBusOptions = {
   maxMessagesPerMinute: 10,
   maxHop: 3,
   cacheTtlSeconds: 5,
+  askTimeoutSeconds: 180,
+  activityLines: 12,
 }
 
 function pick<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
@@ -60,5 +66,7 @@ export function resolveOptions(raw: Readonly<Record<string, unknown>>): SessionB
     maxMessagesPerMinute: positive(raw["maxMessagesPerMinute"], defaultOptions.maxMessagesPerMinute),
     maxHop: positive(raw["maxHop"], defaultOptions.maxHop),
     cacheTtlSeconds: positive(raw["cacheTtlSeconds"], defaultOptions.cacheTtlSeconds),
+    askTimeoutSeconds: positive(raw["askTimeoutSeconds"], defaultOptions.askTimeoutSeconds),
+    activityLines: positive(raw["activityLines"], defaultOptions.activityLines),
   }
 }

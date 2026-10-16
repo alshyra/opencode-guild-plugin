@@ -1,7 +1,7 @@
 import type { Ctx } from "./types"
 import type { Deps } from "./tools"
-import type { Peer } from "./registry"
-import { describePeer } from "./registry"
+import type { Peer } from "./peers"
+import { describePeer } from "./peers"
 import { debug, warn } from "./log"
 
 /** Keep the injected block small: it is paid for on every model request. */

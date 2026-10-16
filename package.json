@@ -5,14 +5,19 @@
   "description": "Let concurrent OpenCode sessions working on the same project discover and message each other.",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./tui": "./src/tui.tsx"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@opencode/plugin": "2.0.30",
+    "@opencode/theme": "2.0.30",
+    "@opentui/core": "0.5.17",
+    "@opentui/solid": "0.5.17",
     "@types/node": "^24.12.2",
+    "solid-js": "1.9.15",
     "typescript": "^5.8.2"
   }
 }

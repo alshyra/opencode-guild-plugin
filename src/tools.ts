@@ -1,8 +1,11 @@
 import type { Ctx } from "./types"
 import type { Guards } from "./guards"
 import type { SessionBusOptions } from "./options"
-import { Registry, describePeer, type Peer } from "./registry"
-import { BUS_ID, renderPeerMessage, type PeerMessageMeta } from "./envelope"
+import type { Api } from "./api"
+import type { Registry } from "./registry"
+import { type Peer, describePeer } from "./peers"
+import { BUS_ID, renderPeerMessage, stripPeerEnvelope, type PeerMessageKind, type PeerMessageMeta } from "./envelope"
+import { describeActivity } from "./activity"
 import { log, warn } from "./log"
 
 export interface Deps {
@@ -10,10 +13,18 @@ export interface Deps {
   readonly registry: Registry
   readonly guards: Guards
   readonly options: SessionBusOptions
+  readonly api: Api
+}
+
+interface Caller {
+  readonly sessionID: string
+  readonly agent?: string
+  readonly messageID: string
+  readonly id: string
+  readonly signal?: AbortSignal
 }
 
 interface ListInput {
-  readonly scope?: string
   readonly include_idle?: boolean
 }
 
@@ -23,21 +34,39 @@ interface SendInput {
   readonly expect_reply?: boolean
 }
 
+interface AskInput {
+  readonly target?: string
+  readonly question?: string
+  readonly timeout_seconds?: number
+}
+
+interface HandoffInput {
+  readonly target?: string
+  readonly task?: string
+  readonly context?: string
+}
+
+interface ActivityInput {
+  readonly target?: string
+  readonly messages?: number
+}
+
+const TARGET_PROPERTY = {
+  type: "string",
+  description:
+    "The peer session: the number from peers_list, a session id (ses_...) or a unique session id prefix.",
+} as const
+
 export async function registerTools(ctx: Ctx, deps: Deps) {
   return ctx.tool.transform((editor) => {
     editor.add({
       name: "peers_list",
       description:
-        "List the other OpenCode sessions working in the same project (the same repository, including its worktrees). " +
-        "Use it when the user asks which other sessions are running or what they are working on, and before peers_send.",
+        "List the other OpenCode sessions working in the same folder (same project and same checkout). " +
+        "Use it when the user asks what another session is doing, and before peers_send, peers_ask or peers_handoff.",
       input: {
         type: "object",
         properties: {
-          scope: {
-            type: "string",
-            enum: ["project", "directory"],
-            description: "project (default) lists every checkout of the project; directory only the current checkout.",
-          },
           include_idle: {
             type: "boolean",
             description: "Also list sessions that have been idle for a long time. Defaults to false.",
@@ -47,23 +76,20 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
       },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as ListInput
-        const scope = input.scope === "directory" ? "directory" : deps.options.scope
         const peers = await deps.registry.peers({
           self: context.sessionID,
-          scope,
+          scope: deps.options.scope,
           includeIdle: input.include_idle === true || deps.options.includeIdle,
         })
         if (peers.length === 0) {
-          return { content: "No other session is currently working on this project.", metadata: { peers: [] } }
+          return { content: `No other session is working in ${deps.options.scope === "directory" ? "this folder" : "this project"}.`, metadata: { peers: [] } }
         }
-        const lines = peers.map(
-          (peer, index) => `${index + 1}. ${describePeer(peer)}${peer.directory ? ` [${peer.directory}]` : ""}`,
-        )
+        const lines = peers.map((peer, index) => `${index + 1}. ${describePeer(peer)}`)
         return {
           content: [
-            `${peers.length} other session(s) on this project:`,
+            `${peers.length} other session(s) here:`,
             ...lines,
-            `Write to one with peers_send(target="1", message="..."), or target the session id.`,
+            `Message one with peers_send(target="1", message="..."), ask one with peers_ask, or hand work over with peers_handoff.`,
           ].join("\n"),
           metadata: {
             peers: peers.map((peer, index) => ({
@@ -84,25 +110,20 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
     editor.add({
       name: "peers_send",
       description:
-        "Send a plain-text message to another OpenCode session listed by peers_list. That session's agent reads it as an " +
-        "incoming message and can reply. Use it when the user asks you to tell or ask something to another session, or when " +
-        "a change you made invalidates what another session is doing. Send text you write yourself: never conversation " +
-        "history, file contents or diffs. Never relay a message you received from another session.",
+        "Send a plain-text note to another session of the same folder, listed by peers_list. Its agent reads it as an incoming " +
+        "message. Use it to inform a peer of something that affects its work (a renamed field, a moved file, a decision). Send " +
+        "text you write yourself: never conversation history, file contents or diffs.",
       input: {
         type: "object",
         properties: {
-          target: {
-            type: "string",
-            description:
-              "The session to write to: the number from peers_list, a session id (ses_...) or a unique session id prefix.",
-          },
+          target: TARGET_PROPERTY,
           message: {
             type: "string",
-            description: "The message text. Keep it short, factual and self-contained: the peer sees only this text.",
+            description: "The note. Keep it short, factual and self-contained: the peer only sees this text.",
           },
           expect_reply: {
             type: "boolean",
-            description: "Ask the peer to answer you. Defaults to false; use true only when you need an answer.",
+            description: "Ask the peer to answer you. Defaults to false.",
           },
         },
         required: ["target", "message"],
@@ -110,96 +131,367 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
       },
       execute: async (raw, context) => {
         const input = (raw ?? {}) as SendInput
-        const message = String(input.message ?? "").trim()
-        if (!message) return { content: "The message is empty: nothing was sent." }
-        if (message.length > deps.options.maxMessageChars) {
-          return {
-            content: `The message is too long (${message.length} chars, limit ${deps.options.maxMessageChars}). Summarize it first.`,
-          }
-        }
-
-        const peers = await deps.registry.peers({
-          self: context.sessionID,
-          scope: deps.options.scope,
-          includeIdle: true,
-        })
-        const peer = resolvePeer(peers, String(input.target ?? ""))
-        if (!peer) {
-          const available = peers.length ? peers.map((item) => describePeer(item)).join("\n- ") : "(none)"
-          return {
-            content: `No single session matches target "${input.target}". Sessions you can write to:\n- ${available}\nCall peers_list and use one of its numbers.`,
-          }
-        }
-
+        const body = String(input.message ?? "").trim()
+        const invalid = validateBody(deps, body)
+        if (invalid) return { content: invalid }
+        const peer = await resolveInputPeer(deps, context, input.target)
+        if (typeof peer === "string") return { content: peer }
         try {
-          deps.guards.assertRate(context.sessionID, deps.options)
-        } catch (cause) {
-          return { content: cause instanceof Error ? cause.message : String(cause) }
-        }
-
-        const hop = deps.guards.nextHop(context.sessionID)
-        if (hop > deps.options.maxHop) {
+          const result = await deliver(deps, {
+            caller: callerOf(context),
+            peer,
+            body,
+            kind: "note",
+            expectReply: input.expect_reply === true,
+          })
           return {
-            content:
-              "This conversation already went back and forth between sessions too many times. Answer the user directly instead of messaging another session.",
+            content: `Delivered to ${peer.handle} "${peer.title}" (${deliveryLabel(peer, result.delivery)}).`,
+            metadata: { to: peer.id, delivery: result.delivery, hop: result.hop },
+          }
+        } catch (cause) {
+          return { content: errorText(cause) }
+        }
+      },
+    })
+
+    editor.add({
+      name: "peers_ask",
+      description:
+        "Ask another session of the same folder a question and wait for its answer. Use it when you need to know something that " +
+        "only that session knows: what it is doing, why the workspace is in a given state, whether it already changed a file. " +
+        "Returns the peer's answer, or a note that it has not answered yet.",
+      input: {
+        type: "object",
+        properties: {
+          target: TARGET_PROPERTY,
+          question: {
+            type: "string",
+            description: "A short, direct question. The peer sees only this text.",
+          },
+          timeout_seconds: {
+            type: "number",
+            description: `How long to wait for the answer, 10 to 600. Defaults to the configured ${deps.options.askTimeoutSeconds}s. A peer needs a full turn to answer, so do not lower it without reason.`,
+          },
+        },
+        required: ["target", "question"],
+        additionalProperties: false,
+      },
+      execute: async (raw, context) => {
+        const input = (raw ?? {}) as AskInput
+        const body = String(input.question ?? "").trim()
+        const invalid = validateBody(deps, body)
+        if (invalid) return { content: invalid }
+        const peer = await resolveInputPeer(deps, context, input.target)
+        if (typeof peer === "string") return { content: peer }
+        const timeoutSeconds = clamp(input.timeout_seconds, 10, 600, deps.options.askTimeoutSeconds)
+        const since = Date.now() - 1_000
+        try {
+          await deliver(deps, {
+            caller: callerOf(context),
+            peer,
+            body,
+            kind: "question",
+            expectReply: true,
+          })
+        } catch (cause) {
+          return { content: errorText(cause) }
+        }
+        const answer = await waitForReply(deps, {
+          self: context.sessionID,
+          peerID: peer.id,
+          since,
+          timeoutMs: timeoutSeconds * 1000,
+          ...(context.signal ? { signal: context.signal } : {}),
+        })
+        if (answer) {
+          return {
+            content: `Answer from ${peer.handle} "${peer.title}":\n${answer}`,
+            metadata: { from: peer.id, answered: true, waitedSeconds: Math.round((Date.now() - since) / 1000) },
           }
         }
-
-        if (!(await allowSend(deps, context, peer))) {
-          return { content: `Sending to other sessions is disabled by the session-bus configuration.` }
-        }
-
-        const sender = await senderInfo(deps, context.sessionID)
-        const meta: PeerMessageMeta = {
-          bus: BUS_ID,
-          v: 1,
-          from: sender.id,
-          fromTitle: sender.title,
-          fromDirectory: sender.directory,
-          hop,
-          ts: Date.now(),
-        }
-        const text = renderPeerMessage(meta, message, input.expect_reply === true)
-
-        const delivered = await deps.ctx.session.synthetic({
-          sessionID: peer.id,
-          text,
-          description: `Message from ${sender.title}`,
-          metadata: { ...meta },
-          delivery: deps.options.delivery,
-          resume: true,
-        })
-
-        deps.guards.noteDelivery(peer.id, context.sessionID, hop)
-        log(`delivered message ${sender.id} -> ${peer.id} (${delivered?.delivery ?? "unknown"})`)
-
+        const blocked = await peerPermissionHint(deps, peer)
         return {
-          content: `Message delivered to ${peer.handle} "${peer.title}". ${
-            peer.running ? "It was injected into its current turn." : "Its session was resumed to read it."
-          }`,
-          metadata: { to: peer.id, handle: peer.handle, delivery: delivered?.delivery ?? null },
+          content:
+            `Question sent to ${peer.handle} "${peer.title}", still unanswered after ${Math.round((Date.now() - since) / 1000)}s.` +
+            blocked +
+            ` Do not wait any longer: continue with what you have, and tell the user the peer has not answered. ` +
+            `If it answers later, its message will arrive as a normal peer message.`,
+          metadata: { from: peer.id, answered: false, blocked },
+        }
+      },
+    })
+
+    editor.add({
+      name: "peers_handoff",
+      description:
+        "Hand a work item over to another session of the same folder: a task to take on, a branch to continue, a file to finish. " +
+        "The peer receives it as a task statement, explicitly attributed to your user. Use it when the user says to give work to " +
+        "another session ('prends ca', 'passe le relais').",
+      input: {
+        type: "object",
+        properties: {
+          target: TARGET_PROPERTY,
+          task: {
+            type: "string",
+            description: "What the peer must take on, phrased as an instruction. Be specific and self-contained.",
+          },
+          context: {
+            type: "string",
+            description: "Optional: current state, files, decisions or blockers the peer needs before starting.",
+          },
+        },
+        required: ["target", "task"],
+        additionalProperties: false,
+      },
+      execute: async (raw, context) => {
+        const input = (raw ?? {}) as HandoffInput
+        const task = String(input.task ?? "").trim()
+        const invalid = validateBody(deps, task)
+        if (invalid) return { content: invalid }
+        const peer = await resolveInputPeer(deps, context, input.target)
+        if (typeof peer === "string") return { content: peer }
+        const contextNote = String(input.context ?? "").trim()
+        const body = contextNote ? `${task}\n\nContext from my side:\n${contextNote}` : task
+        try {
+          const result = await deliver(deps, {
+            caller: callerOf(context),
+            peer,
+            body,
+            kind: "handoff",
+            expectReply: false,
+          })
+          return {
+            content: `Handed over to ${peer.handle} "${peer.title}" (${deliveryLabel(peer, result.delivery)}). It was told to treat this as a task from your user.`,
+            metadata: { to: peer.id, delivery: result.delivery, hop: result.hop },
+          }
+        } catch (cause) {
+          return { content: errorText(cause) }
+        }
+      },
+    })
+
+    editor.add({
+      name: "peers_activity",
+      description:
+        "Inspect what another session of the same folder is doing: its recent conversation, the tools it ran, the files its last " +
+        "turn changed, and the uncommitted state of its directory. Use it to answer 'what are you doing?', 'why is the workspace " +
+        "in this state?' or to check whether a peer already touched a file, before asking it directly with peers_ask.",
+      input: {
+        type: "object",
+        properties: {
+          target: TARGET_PROPERTY,
+          messages: {
+            type: "number",
+            description: `How many recent conversation and tool entries to include, 1 to 40. Defaults to ${deps.options.activityLines}.`,
+          },
+        },
+        required: ["target"],
+        additionalProperties: false,
+      },
+      execute: async (raw, context) => {
+        const input = (raw ?? {}) as ActivityInput
+        const peer = await resolveInputPeer(deps, context, input.target)
+        if (typeof peer === "string") return { content: peer }
+        const lines = clamp(input.messages, 1, 40, deps.options.activityLines)
+        try {
+          const report = await describeActivity(deps.api, peer, { messages: lines, files: lines })
+          return { content: report, metadata: { target: peer.id } }
+        } catch (cause) {
+          return { content: `Could not read ${peer.handle}'s activity: ${errorText(cause)}` }
         }
       },
     })
   })
 }
 
-async function allowSend(deps: Deps, context: { sessionID: string; agent?: string; messageID: string; id: string }, peer: Peer) {
+interface DeliverInput {
+  readonly caller: Caller
+  readonly peer: Peer
+  readonly body: string
+  readonly kind: PeerMessageKind
+  readonly expectReply: boolean
+}
+
+async function deliver(deps: Deps, input: DeliverInput): Promise<{ delivery: string; hop: number }> {
+  deps.guards.assertRate(input.caller.sessionID, deps.options)
+  const hop = deps.guards.nextHop(input.caller.sessionID)
+  if (hop > deps.options.maxHop) {
+    throw new Error(
+      "this exchange already went back and forth between sessions too many times; answer the user directly instead",
+    )
+  }
+  if (!(await allowSend(deps, input.caller, input.peer))) {
+    throw new Error("sending to other sessions is disabled by the session-bus configuration")
+  }
+  const sender = await senderInfo(deps, input.caller.sessionID)
+  const meta: PeerMessageMeta = {
+    bus: BUS_ID,
+    v: 1,
+    from: sender.id,
+    fromTitle: sender.title,
+    fromDirectory: sender.directory,
+    kind: input.kind,
+    hop,
+    ts: Date.now(),
+  }
+  const delivered = await deps.ctx.session.synthetic({
+    sessionID: input.peer.id,
+    text: renderPeerMessage(meta, input.body, input.expectReply),
+    description: `Message from ${sender.title}`,
+    metadata: { ...meta, expectReply: input.expectReply },
+    delivery: deps.options.delivery,
+    resume: true,
+  })
+  deps.guards.noteDelivery(input.peer.id, input.caller.sessionID, hop)
+  log(`delivered ${input.kind} ${sender.id} -> ${input.peer.id} (${delivered?.delivery ?? "unknown"}, hop ${hop})`)
+  return { delivery: String(delivered?.delivery ?? "queued"), hop }
+}
+
+async function allowSend(deps: Deps, caller: Caller, peer: Peer): Promise<boolean> {
   if (deps.options.permission === "allow") return true
   if (deps.options.permission === "deny") {
     warn(`blocked message to ${peer.id}: permission=deny`)
     return false
   }
   await deps.ctx.permission.assert({
-    sessionID: context.sessionID,
-    agent: context.agent,
+    sessionID: caller.sessionID,
+    agent: caller.agent,
     action: "session.message",
     resources: [peer.id],
     save: [peer.id],
-    source: { type: "tool", messageID: context.messageID, id: context.id },
+    source: { type: "tool", messageID: caller.messageID, id: caller.id },
     metadata: { title: peer.title, handle: peer.handle, directory: peer.directory },
   })
   return true
+}
+
+interface InboxLike {
+  readonly type?: string
+  readonly text?: string
+  readonly metadata?: Record<string, unknown>
+  readonly time?: { readonly created?: number }
+}
+
+interface InboxItemLike {
+  readonly type?: string
+  readonly time?: { readonly created?: number }
+  readonly payload?: {
+    readonly text?: string
+    readonly metadata?: Record<string, unknown>
+  }
+}
+
+async function waitForReply(
+  deps: Deps,
+  input: {
+    readonly self: string
+    readonly peerID: string
+    readonly since: number
+    readonly timeoutMs: number
+    readonly signal?: AbortSignal
+  },
+): Promise<string | undefined> {
+  const deadline = Date.now() + input.timeoutMs
+  for (;;) {
+    const answer = await readAnswer(deps, input)
+    if (answer) return answer
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) return undefined
+    try {
+      await sleep(Math.min(1_500, remaining), input.signal)
+    } catch {
+      // The incoming answer interrupts the running turn, which aborts this
+      // tool. Read one last time before giving up, otherwise the answer that
+      // just arrived would be missed.
+      return readAnswer(deps, input)
+    }
+  }
+}
+
+async function readAnswer(
+  deps: Deps,
+  input: { readonly self: string; readonly peerID: string; readonly since: number },
+): Promise<string | undefined> {
+  // A steered message stays in the inbox until the current step ends, so while
+  // this tool is blocking the answer is visible there, not in the transcript.
+  try {
+    const inbox = await deps.api.get<readonly InboxItemLike[]>(`/api/session/${input.self}/inbox`)
+    const pending = inbox.find(
+      (item) =>
+        item.type === "synthetic" &&
+        item.payload?.metadata?.["from"] === input.peerID &&
+        (item.time?.created ?? 0) >= input.since,
+    )
+    if (pending?.payload?.text) return stripPeerEnvelope(pending.payload.text)
+  } catch (cause) {
+    warn("could not read own inbox while waiting for an answer", cause)
+  }
+
+  let messages: readonly InboxLike[]
+  try {
+    messages = await deps.api.get<readonly InboxLike[]>(`/api/session/${input.self}/message`, { limit: 50 })
+  } catch (cause) {
+    warn("could not read own transcript while waiting for an answer", cause)
+    return undefined
+  }
+  const answer = messages
+    .filter((message) => message.type === "synthetic" && typeof message.text === "string")
+    .filter((message) => message.metadata?.["from"] === input.peerID && (message.time?.created ?? 0) >= input.since)
+    .sort((left, right) => (left.time?.created ?? 0) - (right.time?.created ?? 0))[0]
+  return answer?.text ? stripPeerEnvelope(answer.text) : undefined
+}
+
+async function peerPermissionHint(deps: Deps, peer: Peer): Promise<string> {
+  try {
+    const pending = await deps.api.get<readonly { readonly action?: string }[]>(`/api/session/${peer.id}/permission`)
+    if (!pending.some((request) => request.action === "session.message")) return ""
+    return ` The peer is waiting for a permission approval for that message: someone must approve it in that session's window before it can answer.`
+  } catch {
+    return ""
+  }
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error("aborted"))
+      return
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(new Error("aborted"))
+    }
+    signal?.addEventListener("abort", onAbort, { once: true })
+  })
+}
+
+async function resolveInputPeer(deps: Deps, context: Caller, target: unknown): Promise<Peer | string> {
+  const peers = await deps.registry.peers({ self: context.sessionID, scope: deps.options.scope, includeIdle: true })
+  const peer = resolvePeer(peers, String(target ?? ""))
+  if (peer) return peer
+  const available = peers.length ? peers.map((item) => describePeer(item)).join("\n- ") : "(none)"
+  return `No single session matches target "${String(target ?? "")}". Sessions available to you:\n- ${available}\nCall peers_list and use one of its numbers.`
+}
+
+function resolvePeer(peers: readonly Peer[], target: string): Peer | undefined {
+  const wanted = target.trim()
+  if (!wanted) return undefined
+  if (/^\d+$/.test(wanted)) {
+    const peer = peers[Number.parseInt(wanted, 10) - 1]
+    if (peer) return peer
+  }
+  const exact = peers.find((peer) => peer.id === wanted)
+  if (exact) return exact
+  const lowered = wanted.toLowerCase()
+  const byPrefix = peers.filter((peer) => peer.id.startsWith(lowered) || peer.handle === lowered)
+  if (byPrefix.length === 1) return byPrefix[0]
+  const byTitle = peers.filter((peer) => peer.title.toLowerCase().includes(lowered))
+  if (byTitle.length === 1) return byTitle[0]
+  return undefined
 }
 
 async function senderInfo(
@@ -223,19 +515,40 @@ async function senderInfo(
   }
 }
 
-function resolvePeer(peers: readonly Peer[], target: string): Peer | undefined {
-  const wanted = target.trim()
-  if (!wanted) return undefined
-  if (/^\d+$/.test(wanted)) {
-    const peer = peers[Number.parseInt(wanted, 10) - 1]
-    if (peer) return peer
+function callerOf(context: {
+  sessionID: string
+  agent?: string
+  messageID: string
+  id: string
+  signal?: AbortSignal
+}): Caller {
+  return {
+    sessionID: context.sessionID,
+    agent: context.agent,
+    messageID: context.messageID,
+    id: context.id,
+    ...(context.signal ? { signal: context.signal } : {}),
   }
-  const exact = peers.find((peer) => peer.id === wanted)
-  if (exact) return exact
-  const lowered = wanted.toLowerCase()
-  const byPrefix = peers.filter((peer) => peer.id.startsWith(lowered) || peer.handle === lowered)
-  if (byPrefix.length === 1) return byPrefix[0]
-  const byTitle = peers.filter((peer) => peer.title.toLowerCase().includes(lowered))
-  if (byTitle.length === 1) return byTitle[0]
+}
+
+function validateBody(deps: Deps, body: string): string | undefined {
+  if (!body) return "Nothing was sent: the text is empty."
+  if (body.length > deps.options.maxMessageChars) {
+    return `The text is too long (${body.length} characters, limit ${deps.options.maxMessageChars}). Shorten it first.`
+  }
   return undefined
+}
+
+function clamp(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback
+  return Math.min(max, Math.max(min, Math.round(value)))
+}
+
+function deliveryLabel(peer: Peer, delivery: string): string {
+  if (peer.running || delivery === "steer") return "injected into its current turn"
+  return "its session was resumed to read it"
+}
+
+function errorText(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause)
 }
