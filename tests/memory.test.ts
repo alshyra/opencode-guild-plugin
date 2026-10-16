@@ -564,3 +564,21 @@ describe("formatting and helpers", () => {
     expect(memoryFile(first)).toBe(join(memoryDirectory(first), "memory.jsonl"))
   })
 })
+
+describe("history archives", () => {
+  test("keeps the last five generations and purges the oldest", () => {
+    const box = sandbox()
+    const store = box.store()
+    for (let index = 0; index < 8; index += 1) store.write(box.entry(`fait numero ${index}`))
+    for (let index = 0; index < 8; index += 1) {
+      const target = store.all()[0]
+      if (!target) break
+      store.forget(target.id)
+    }
+    const archives = archivesOf(box.history)
+    expect(archives).toHaveLength(5)
+    for (const name of archives) {
+      expect(readFileSync(join(box.history, name), "utf8").trim().length).toBeGreaterThan(0)
+    }
+  })
+})

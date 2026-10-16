@@ -119,9 +119,9 @@ bun run typecheck
 bun test
 ```
 
-`tests/` holds the offline suites for the pure modules (`memory.ts`, `peers.ts`, and the `inject.ts` render
-functions): no service, no model call. Anything that needs a live server is still verified by hand against a
-running service, as below.
+`tests/` holds the offline suites for the pure modules (`memory.ts`, `peers.ts`, the `inject.ts` render
+functions, `compress.ts`, `options.ts` and `delegations.ts`): no service, no model call. Anything that needs a
+live server is still verified by hand against a running service, as below.
 
 1. Plugins load with the location; `location.reload` is not enough. Evict then re-open the location:
    `opencode api delete "/api/debug/location?location%5Bdirectory%5D=<dir>"` then
@@ -140,12 +140,9 @@ running service, as below.
    pinned ones must survive verbatim, `history/` must hold the byte-identical previous file, and a `dry_run`
    must leave the file untouched. The refusal branches (model failure, invalid JSON, no gain, nothing to
    merge) are covered by a stub context instead of a model call.
-7. Weight and elevation: `bun ~/tmp/oc/mem-weight-check.ts` drives `MemoryStore` directly (no service, no
-   model): reinforcement, disk round-trip of `hits`, weight inherited by a merge, the ranking used by the
-   injected block, decay and `isStale` with an injected `now`, promote/demote and their archive behaviour.
-8. Test drivers used during development: `~/tmp/oc/bus-test*.py` (peers), `~/tmp/oc/mem-live-test.py`
-   (memory), `~/tmp/oc/mem-compress-unit.ts` and `~/tmp/oc/mem-compress-refusals.ts` (pure functions and
-   compression branches, run with `HOME=<sandbox> bun run`), `~/tmp/oc/mem-compress-live.py` and
-   `~/tmp/oc/mem-compress-live-hard.py` (live compression, guarded by `--yes`), `~/tmp/oc/mem-weight-check.ts`
-   (weight, decay and elevation against `MemoryStore`), `~/tmp/oc/mem-decay-live.py` (a real session must quote
-   `stale` in its injected block and see the count in `memory_read`, guarded by `--yes`).
+7. The offline suite is the regression net for the pure modules: `memory.ts`, `peers.ts`, `inject.ts`,
+   `compress.ts`, `options.ts` and `delegations.ts` are all driven directly by `bun test`, with an injected
+   clock, a stub model and throwaway folders — no service, no network.
+8. Anything that needs a live server stays a throwaway driver outside the repository (a Python slice against
+   the local HTTP API for peers and memory, a `--yes`-guarded run for compression and decay). Those are not
+   part of the project and are not referenced by it.
