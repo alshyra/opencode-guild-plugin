@@ -103,8 +103,10 @@ entry: `memory_forget` it as soon as you notice.
 ## TUI
 
 - The right sidebar shows a collapsible **Linked sessions (N)** block, one line per peer of this folder:
-  `●` working now, `○` idle (idle lines are dimmed), with the peer's last tool call underneath
-  (`shell: npm test`, `edit: src/foo.ts`). Nothing is shown when no other session works in the folder.
+  `●` working now, `○` idle (idle lines are dimmed). Under a line, what the peer is doing **right now**
+  (`running: shell npm test`) or, while it is working, the tool it just finished (`last: edit src/foo.ts`).
+  An idle peer shows no sub-line, so nothing reads as if it were still running.
+  Nothing is shown at all when no other session works in the folder.
 - **Click the title** to collapse or expand it. The state is durable and shared between TUI instances;
   collapsed, the block is still `▸ Linked sessions (2)`.
 - **Click a session line** to open or focus that session's tab. It also clears the peer's unread marker

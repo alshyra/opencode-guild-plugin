@@ -108,10 +108,10 @@ export interface SessionMessageLike {
 export interface ToolUse {
   readonly name: string
   readonly hint?: string
-  readonly failed: boolean
+  readonly status: string
 }
 
-/** Last tool a session ran: the "what is it doing right now" one-liner. */
+/** Last tool a session ran, with its live status, for the "what is it doing" one-liner. */
 export function lastToolUse(messages: readonly SessionMessageLike[]): ToolUse | undefined {
   const ordered = [...messages].sort((left, right) => (left.time?.created ?? 0) - (right.time?.created ?? 0))
   let found: ToolUse | undefined
@@ -120,10 +120,23 @@ export function lastToolUse(messages: readonly SessionMessageLike[]): ToolUse | 
     for (const part of message.content ?? []) {
       if (part.type !== "tool" || !part.name) continue
       const hint = toolHint(part.state?.input)
-      found = { name: part.name, failed: part.state?.status === "error", ...(hint ? { hint } : {}) }
+      found = { name: part.name, status: part.state?.status ?? "unknown", ...(hint ? { hint } : {}) }
     }
   }
   return found
+}
+
+export function isToolRunning(status: string): boolean {
+  return status === "running" || status === "streaming"
+}
+
+/** Under a peer: what it is doing right now, or what it did last, or nothing. */
+export function activityLine(tool: ToolUse | undefined, peerRunning: boolean): string | undefined {
+  if (!tool) return undefined
+  const label = `${tool.name}${tool.hint ? ` ${tool.hint}` : ""}${tool.status === "error" ? " (failed)" : ""}`
+  if (isToolRunning(tool.status)) return `running: ${label}`
+  if (peerRunning) return `last: ${label}`
+  return undefined
 }
 
 /** Peer messages still newer than the last acknowledgement, inside the unread window. */

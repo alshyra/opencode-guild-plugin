@@ -5,6 +5,7 @@ import {
   type Peer,
   type SessionLike,
   type SessionMessageLike,
+  activityLine,
   countPeerMessages,
   lastToolUse,
   selectPeers,
@@ -54,15 +55,14 @@ export default Plugin.define({
       if (!context.ui.tabs.focus(peerID)) context.ui.router.navigate({ type: "session", sessionID: peerID })
     }
 
-    /** Last tool the peer ran, cached: the sidebar must stay cheap. */
+    /** What the peer is doing now, or did last: cached, the sidebar must stay cheap. */
     const activityOf = async (peer: Peer): Promise<string | undefined> => {
       const cached = activityCache.get(peer.id)
       if (cached && Date.now() - cached.at < ACTIVITY_TTL_MS) return cached.value
       let value = cached?.value
       try {
         const response = await context.client.message.list({ sessionID: peer.id, limit: 20 })
-        const tool = lastToolUse(response.data as readonly SessionMessageLike[])
-        value = tool ? `${tool.name}${tool.hint ? `: ${tool.hint}` : ""}${tool.failed ? " (failed)" : ""}` : undefined
+        value = activityLine(lastToolUse(response.data as readonly SessionMessageLike[]), peer.running)
       } catch {
         // keep the previous value
       }

@@ -50,7 +50,9 @@ Both entry files must stay at the repository root: the loader resolves a plugin 
 - The sidebar block is click-driven (`onMouseDown`), not keyboard-driven: click toggles the title, a click on
   a line opens that session's tab. Expansion lives in `context.storage.store` (durable, shared), the unread
   markers in `context.storage.memory` (ephemeral) and are derived from the *current* session's synthetic
-  messages — never from an event name, which is not documented. The last-tool line is cached 30s per peer.
+  messages — never from an event name, which is not documented. The sub-line is cached 30s per peer, and it
+  must never imply work that is not happening: `running: …` only for a tool whose state is running/streaming,
+  `last: …` only while the peer executes, nothing for an idle peer.
 - The folder memory is one file per folder, `~/.opencode/session-bus/<sha1 of the folder>/memory.jsonl`, never
   inside the project: a folder is a checkout, so worktrees do not share it. Writes append; a rewrite (key
   replaced, cap reached, entry forgotten) always re-reads the file first and goes through `tmp + rename`, so a
