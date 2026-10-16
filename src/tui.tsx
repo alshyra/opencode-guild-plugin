@@ -11,7 +11,7 @@ import {
   lastToolUse,
   selectPeers,
 } from "./peers"
-import { memoryFile, parseEntries, selectEntries } from "./memory"
+import { isStale, memoryFile, parseEntries, selectEntries } from "./memory"
 import { truncate } from "./log"
 import { resolveOptions } from "./options"
 
@@ -35,6 +35,7 @@ interface MemoryGauge {
   readonly total: number
   readonly pinned: number
   readonly injected: number
+  readonly stale: number
   readonly max: number
 }
 
@@ -84,10 +85,17 @@ export default Plugin.define({
         return
       }
       const entries = readMemory(directory)
+      const now = Date.now()
       setGauge({
         total: entries.length,
         pinned: entries.filter((entry) => entry.pinned).length,
-        injected: selectEntries(entries, undefined, [], options.memoryInjectLines).length,
+        // Same ranking as the injected block: the gauge and the prompt must not
+        // disagree about what a session actually reads.
+        injected: selectEntries(entries, undefined, [], options.memoryInjectLines, {
+          now,
+          halfLifeDays: options.memoryHalfLifeDays,
+        }).length,
+        stale: entries.filter((entry) => isStale(entry, now, options.memoryStaleDays)).length,
         max: options.memoryMaxEntries,
       })
     }
@@ -247,7 +255,7 @@ export default Plugin.define({
                     <Show when={ui.memoryExpanded}>
                       <text fg={memoryColor()}>{`   ${bar(memory().total, memory().max)}  ${
                         memory().pinned
-                      } pinned · ${memory().injected} in prompt`}</text>
+                      } pinned · ${memory().injected} in prompt${memory().stale > 0 ? ` · ${memory().stale} stale` : ""}`}</text>
                     </Show>
                   </box>
                 )}
@@ -318,16 +326,30 @@ export default Plugin.define({
                 })
                 return
               }
-              const shown = selectEntries(entries, undefined, [], 50)
+              const shown = selectEntries(entries, undefined, [], 50, {
+                now: Date.now(),
+                halfLifeDays: options.memoryHalfLifeDays,
+              })
               await context.ui.dialog.select({
-                title: `Folder memory — ${entries.length}/${options.memoryMaxEntries} (${gauge()?.pinned ?? 0} pinned)`,
+                title: `Folder memory — ${entries.length}/${options.memoryMaxEntries} (${gauge()?.pinned ?? 0} pinned${
+                  (gauge()?.stale ?? 0) > 0 ? `, ${gauge()?.stale} stale` : ""
+                })`,
                 placeholder: "Filter the entries",
-                options: shown.map((entry) => ({
-                  title: `${entry.pinned ? "★ " : ""}${(entry.hits ?? 0) > 1 ? `×${entry.hits} ` : ""}${truncate(entry.text, 90)}`,
-                  value: entry.id,
-                  description: `${entry.id} · ${entry.tags.join(", ") || "no tag"}`,
-                  footer: entry.key ? `key=${entry.key}` : undefined,
-                })),
+                options: shown.map((entry) => {
+                  const marks = [
+                    entry.pinned ? "★" : "",
+                    (entry.hits ?? 0) > 1 ? `×${entry.hits}` : "",
+                    isStale(entry, Date.now(), options.memoryStaleDays) ? "stale" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")
+                  return {
+                    title: `${marks ? `${marks} ` : ""}${truncate(entry.text, 90)}`,
+                    value: entry.id,
+                    description: `${entry.id} · ${entry.tags.join(", ") || "no tag"}`,
+                    footer: entry.key ? `key=${entry.key}` : undefined,
+                  }
+                }),
                 search: (query, items) => {
                   const needle = query.trim().toLowerCase()
                   if (!needle) return items

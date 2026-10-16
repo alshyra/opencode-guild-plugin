@@ -54,7 +54,11 @@ Both entry files must stay at the repository root: the loader resolves a plugin 
   must never imply work that is not happening: `running: …` only for a tool whose state is running/streaming,
   `last: …` only while the peer executes, nothing for an idle peer.
 - The memory gauge reads `memory.jsonl` directly (same host as the server plugin) and takes its cap from the
-  same `resolveOptions`, so the TUI and the server can never disagree about the maximum.
+  same `resolveOptions`, so the TUI and the server can never disagree about the maximum. It must also pass the
+  ranking options (`now`, `halfLifeDays`) to `selectEntries`: without them the gauge would rank without decay
+  while the injected block decays, and the two would contradict each other.
+- Staleness has a single implementation (`isStale` in `src/memory.ts`): the TUI imports it rather than
+  recomputing the predicate from `at`/`hits`.
 - `hits` is written to disk as soon as it reaches 1. Parsing it back with a `> 1` filter looks harmless and
   breaks the counter silently: the store would restart from zero at every reinforcement.
 - The decay is a *ranking* concern: `memoryWeight(entry, now, halfLifeDays)` is time-dependent, so every caller
@@ -114,4 +118,5 @@ There is no test suite: verify against a live service.
    (memory), `~/tmp/oc/mem-compress-unit.ts` and `~/tmp/oc/mem-compress-refusals.ts` (pure functions and
    compression branches, run with `HOME=<sandbox> bun run`), `~/tmp/oc/mem-compress-live.py` and
    `~/tmp/oc/mem-compress-live-hard.py` (live compression, guarded by `--yes`), `~/tmp/oc/mem-weight-check.ts`
-   (weight and elevation against `MemoryStore`).
+   (weight, decay and elevation against `MemoryStore`), `~/tmp/oc/mem-decay-live.py` (a real session must quote
+   `stale` in its injected block and see the count in `memory_read`, guarded by `--yes`).

@@ -176,12 +176,15 @@ back:
   the keyboard and jumps to the chosen session.
 - The block always follows the same-folder rule, whatever the `scope` option says.
 - Below it, a collapsible **Folder memory** block gauges the folder memory: a bar for the entries in use out
-  of `memoryMaxEntries`, coloured once it passes 60% and 85%, then `N pinned · M in prompt`. Click to collapse.
+  of `memoryMaxEntries`, coloured once it passes 60% and 85%, then `N pinned · M in prompt`, plus `K stale`
+  when entries nobody comes back to start piling up. Click to collapse.
 - `/memory` (alias `/memoire`, palette "Folder memory") lists the entries from the keyboard, with a filter,
-  each line showing `★` for a standing rule and `×N` for a reinforced fact.
+  each line showing `★` for a standing rule, `×N` for a reinforced fact and `stale` for a candidate to prune.
 
-Both blocks read the same folder the session lives in. The gauge reads the memory file directly: the TUI runs
-on the same host as the server plugin, which has no HTTP surface of its own.
+Both blocks read the same folder the session lives in, and the gauge ranks its `M in prompt` with the same
+`selectEntries(…, { now, halfLifeDays })` call as the injected block, so it can never claim a session reads
+something it does not. The gauge reads the memory file directly: the TUI runs on the same host as the server
+plugin, which has no HTTP surface of its own.
 
 ## Options
 
