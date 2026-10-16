@@ -29,6 +29,12 @@ export interface MemoryEntry {
   readonly key?: string
   /** Pinned entries survive the cap and come first in the injected block. */
   readonly pinned: boolean
+  /**
+   * How many times the same fact came back, or how many entries a merge folded
+   * into this one. The second-brain weight: reinforced facts outrank one-off
+   * notes when the injected block has to choose.
+   */
+  readonly hits?: number
   /** Ids this entry came out of: a consolidation trail, not a strict parent link. */
   readonly mergedFrom?: readonly string[]
 }
@@ -54,7 +60,7 @@ export interface MemoryOptions {
 
 export interface MemoryWriteResult {
   readonly entry: MemoryEntry
-  /** True when the same text was already recorded: nothing was written. */
+  /** True when the same text was already recorded: nothing was added, its weight grew. */
   readonly duplicate: boolean
   /** True when the key replaced an existing entry. */
   readonly replaced: boolean
@@ -65,6 +71,11 @@ export interface MemoryWriteResult {
 
 export type MemoryForgetResult =
   | { readonly removed: readonly MemoryEntry[]; readonly archive?: string }
+  | { readonly error: string }
+
+/** Flipping the standing-rule flag of one entry: the elevation. */
+export type MemoryPromoteResult =
+  | { readonly entry: MemoryEntry; readonly changed: boolean; readonly archive?: string }
   | { readonly error: string }
 
 /** One entry to add during a rewrite: the store fills identity, dates and ids. */
@@ -157,8 +168,22 @@ export class MemoryStore {
 
     if (!key) {
       const same = entries.find((entry) => normalize(entry.text) === normalize(text))
-      if (same) return { entry: same, duplicate: true, replaced: false, dropped: 0, total: entries.length }
+      if (same) {
+        // The same fact came back: that is the second-brain signal. Its weight
+        // grows and it moves up in the injected block. Nothing is lost, so no
+        // archive is written.
+        const reinforced: MemoryEntry = { ...same, at: Date.now(), hits: (same.hits ?? 0) + 1 }
+        const next = entries.map((entry) => (entry.id === same.id ? reinforced : entry))
+        this.#rewrite(next, false)
+        this.#entries = next
+        this.#at = Date.now()
+        this.#loaded = true
+        log(`reinforced memory entry ${same.id} (${reinforced.hits} hits)`)
+        return { entry: reinforced, duplicate: true, replaced: false, dropped: 0, total: next.length }
+      }
     }
+
+    const replaced = key ? entries.find((existing) => existing.key === key) : undefined
 
     const entry: MemoryEntry = {
       id: newID(),
@@ -170,9 +195,11 @@ export class MemoryStore {
       tags: input.tags,
       ...(key ? { key } : {}),
       pinned: input.pinned,
+      // A key carries a fact that evolves: the replacement inherits the weight
+      // of the entry it supersedes.
+      ...(replaced ? { hits: (replaced.hits ?? 0) + 1 } : {}),
     }
 
-    const replaced = key ? entries.find((existing) => existing.key === key) : undefined
     const kept = replaced ? entries.filter((existing) => existing !== replaced) : [...entries]
     kept.push(entry)
     const compacted = compact(kept, this.#options.maxEntries)
@@ -239,18 +266,24 @@ export class MemoryStore {
     }
 
     const replacedAt = Date.now()
-    const added: MemoryEntry[] = input.add.map((digest) => ({
-      id: newID(),
-      at: replacedAt,
-      session: input.session,
-      title: input.title,
-      ...(input.agent ? { agent: input.agent } : {}),
-      text: digest.text.trim(),
-      tags: digest.tags,
-      ...(digest.key ? { key: digest.key } : {}),
-      pinned: false,
-      ...(removed.length > 0 ? { mergedFrom: removed.map((entry) => entry.id) } : {}),
-    }))
+    const added: MemoryEntry[] = input.add.map((digest) => {
+      // A merge folds weights together: the consolidated entry keeps what its
+      // parents had earned.
+      const inherited = removed.reduce((sum, entry) => sum + (entry.hits ?? 0), 0)
+      return {
+        id: newID(),
+        at: replacedAt,
+        session: input.session,
+        title: input.title,
+        ...(input.agent ? { agent: input.agent } : {}),
+        text: digest.text.trim(),
+        tags: digest.tags,
+        ...(digest.key ? { key: digest.key } : {}),
+        pinned: false,
+        ...(inherited > 0 ? { hits: inherited } : {}),
+        ...(removed.length > 0 ? { mergedFrom: removed.map((entry) => entry.id) } : {}),
+      }
+    })
 
     const gone = new Set(removed.map((entry) => entry.id))
     const next = compact([...entries.filter((entry) => !gone.has(entry.id)), ...added], this.#options.maxEntries)
@@ -263,6 +296,34 @@ export class MemoryStore {
     this.#loaded = true
     log(`rewrote memory: -${removed.length} +${added.length} entries (${next.length} total)`)
     return { removed, added, total: next.length, ...(archive ? { archive } : {}) }
+  }
+
+  /**
+   * Flips the standing-rule flag of one entry. Promotion is the elevation: the
+   * caller asks the user first. Demotion is the only losing direction, so it
+   * archives like a removal.
+   */
+  promote(target: string, pinned: boolean): MemoryPromoteResult {
+    const entries = this.#read()
+    const matches = matchEntries(entries, target.trim())
+    if (matches.length !== 1) {
+      return {
+        error:
+          matches.length === 0
+            ? `No memory entry matches "${target.trim()}" (use memory_read to get the ids).`
+            : `${matches.length} entries match "${target.trim()}": give the full id.`,
+      }
+    }
+    const entry = matches[0] as MemoryEntry
+    if (entry.pinned === pinned) return { entry, changed: false }
+    const promoted: MemoryEntry = { ...entry, pinned }
+    const next = entries.map((candidate) => (candidate.id === entry.id ? promoted : candidate))
+    const archive = this.#rewrite(next, !pinned)
+    this.#entries = next
+    this.#at = Date.now()
+    this.#loaded = true
+    log(`${pinned ? "promoted" : "demoted"} memory entry ${entry.id}`)
+    return { entry: promoted, changed: true, ...(archive ? { archive } : {}) }
   }
 
   #read(): readonly MemoryEntry[] {
@@ -286,18 +347,20 @@ export class MemoryStore {
   }
 
   /**
-   * Full rewrite, always preceded by an archive: a rewrite is the only thing
-   * that can lose an entry, so the previous file stays in `history/`.
+   * Full rewrite. `archive` defaults to true, because a rewrite is the only
+   * thing that can lose an entry: the previous file stays in `history/`. Pass
+   * false for a pure reinforcement (a weight or a flag that only goes up), so
+   * `history/` keeps marking the states where something disappeared.
    */
-  #rewrite(entries: readonly MemoryEntry[]): string | undefined {
+  #rewrite(entries: readonly MemoryEntry[], archive = true): string | undefined {
     try {
       mkdirSync(memoryDirectory(this.#directory), { recursive: true, mode: 0o700 })
-      const archive = this.#archive()
+      const archived = archive ? this.#archive() : undefined
       const temporary = `${this.file}.tmp`
       const body = entries.map((entry) => JSON.stringify(entry)).join("\n")
       writeFileSync(temporary, body ? `${body}\n` : "", { mode: 0o600 })
       renameSync(temporary, this.file)
-      return archive
+      return archived
     } catch (cause) {
       this.#report(cause)
       return undefined
@@ -373,7 +436,15 @@ export function matchEntries(entries: readonly MemoryEntry[], target: string): r
   return entries.filter((entry) => normalize(entry.text).includes(needle))
 }
 
-/** Pinned first, then the most recent. */
+/**
+ * Weight a fact earned: repeated writes, plus the entries a merge folded into
+ * it. Pinned entries are handled separately: a standing rule outranks any count.
+ */
+export function memoryWeight(entry: MemoryEntry): number {
+  return (entry.hits ?? 0) + (entry.mergedFrom?.length ?? 0)
+}
+
+/** Pinned first, then the weight the fact earned, then the most recent. */
 export function selectEntries(
   entries: readonly MemoryEntry[],
   query: string | undefined,
@@ -389,15 +460,26 @@ export function selectEntries(
       const haystack = [entry.text, entry.key ?? "", entry.title, entry.session, ...entry.tags].join(" ").toLowerCase()
       return haystack.includes(needle)
     })
-    .sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.at - left.at)
+    .sort(
+      (left, right) =>
+        Number(right.pinned) - Number(left.pinned) ||
+        memoryWeight(right) - memoryWeight(left) ||
+        right.at - left.at,
+    )
     .slice(0, limit)
+}
+
+/** `×3` when a fact came back, so the weight is visible wherever entries are listed. */
+export function weightMark(entry: MemoryEntry): string {
+  const hits = entry.hits ?? 0
+  return hits > 1 ? `×${hits} ` : ""
 }
 
 export function describeEntry(entry: MemoryEntry, maxText: number): string {
   const tags = entry.tags.length ? ` (tags: ${entry.tags.join(", ")})` : ""
   const pin = entry.pinned ? "pinned, " : ""
   return (
-    `${entry.id} [${dateOf(entry.at)}, ${pin}from "${truncate(entry.title, 40)}"] ` +
+    `${entry.id} [${dateOf(entry.at)}, ${pin}${weightMark(entry)}from "${truncate(entry.title, 40)}"] ` +
     `${truncate(entry.text, maxText)}${tags}`
   )
 }
@@ -406,7 +488,7 @@ export function describeEntry(entry: MemoryEntry, maxText: number): string {
 export function summarizeEntry(entry: MemoryEntry, maxText: number): string {
   const tags = entry.tags.length ? ` (${entry.tags.join(", ")})` : ""
   const pin = entry.pinned ? "pinned " : ""
-  return `- ${pin}[${dateOf(entry.at)}] ${truncate(entry.text, maxText)}${tags}`
+  return `- ${pin}${weightMark(entry)}[${dateOf(entry.at)}] ${truncate(entry.text, maxText)}${tags}`
 }
 
 export function dateOf(at: number): string {
@@ -451,6 +533,7 @@ function toEntry(value: unknown): MemoryEntry | undefined {
     tags: Array.isArray(raw["tags"]) ? raw["tags"].filter((tag): tag is string => typeof tag === "string") : [],
     ...(typeof raw["key"] === "string" && raw["key"] ? { key: raw["key"] } : {}),
     pinned: raw["pinned"] === true,
+    ...(typeof raw["hits"] === "number" && raw["hits"] > 0 ? { hits: Math.round(raw["hits"]) } : {}),
     ...(Array.isArray(raw["mergedFrom"])
       ? { mergedFrom: raw["mergedFrom"].filter((id): id is string => typeof id === "string") }
       : {}),

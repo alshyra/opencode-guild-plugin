@@ -1,4 +1,5 @@
 /** @jsxImportSource @opentui/solid */
+import { readFileSync } from "node:fs"
 import { For, Show, createSignal } from "solid-js"
 import { Plugin } from "@opencode/plugin/tui"
 import {
@@ -10,6 +11,9 @@ import {
   lastToolUse,
   selectPeers,
 } from "./peers"
+import { memoryFile, parseEntries, selectEntries } from "./memory"
+import { truncate } from "./log"
+import { resolveOptions } from "./options"
 
 const REFRESH_MS = 15_000
 const DEBOUNCE_MS = 1_500
@@ -27,6 +31,13 @@ interface Row {
   readonly unread: boolean
 }
 
+interface MemoryGauge {
+  readonly total: number
+  readonly pinned: number
+  readonly injected: number
+  readonly max: number
+}
+
 /**
  * TUI half of the session-bus plugin: a collapsible "Linked sessions" block in
  * the right sidebar. The title toggles it, a line opens that session's tab, and
@@ -36,9 +47,13 @@ export default Plugin.define({
   id: "session-bus.tui",
 
   setup(context) {
+    const options = resolveOptions(context.options)
     const [rows, setRows] = createSignal<readonly Row[]>([])
+    const [gauge, setGauge] = createSignal<MemoryGauge | undefined>()
     const [hovered, setHovered] = createSignal<string | undefined>()
-    const [ui, updateUi] = context.storage.store(STORE_KEY, { initial: { expanded: true } })
+    const [ui, updateUi] = context.storage.store(STORE_KEY, {
+      initial: { expanded: true, memoryExpanded: true },
+    })
     const [seen, updateSeen] = context.storage.memory(SEEN_KEY, { initial: {} as Record<string, number> })
 
     const directory = context.location?.directory
@@ -49,6 +64,33 @@ export default Plugin.define({
     const markSeen = (peerID: string) => updateSeen((draft) => void (draft[peerID] = Date.now()))
 
     const toggle = () => void updateUi((draft) => void (draft.expanded = !draft.expanded))
+    const toggleMemory = () => void updateUi((draft) => void (draft.memoryExpanded = !draft.memoryExpanded))
+
+    /**
+     * The folder memory is a file the server plugin owns. The TUI runs on the
+     * same host, so it reads it directly: no HTTP surface for plugin internals.
+     */
+    const readMemory = (directory: string) => {
+      try {
+        return parseEntries(readFileSync(memoryFile(directory), "utf8"))
+      } catch {
+        return []
+      }
+    }
+
+    const refreshMemory = () => {
+      if (!options.memory || !directory) {
+        setGauge(undefined)
+        return
+      }
+      const entries = readMemory(directory)
+      setGauge({
+        total: entries.length,
+        pinned: entries.filter((entry) => entry.pinned).length,
+        injected: selectEntries(entries, undefined, [], options.memoryInjectLines).length,
+        max: options.memoryMaxEntries,
+      })
+    }
 
     const open = (peerID: string) => {
       markSeen(peerID)
@@ -116,6 +158,7 @@ export default Plugin.define({
           next.push({ peer, activity, unread })
         }
         setRows(next)
+        refreshMemory()
       } catch {
         // Keep the last known list: the sidebar must never break the TUI.
       }
@@ -152,9 +195,17 @@ export default Plugin.define({
           const others = () => rows().filter((row) => row.peer.id !== sessionID)
           const label = () =>
             `${others().length === 1 ? "Linked session" : "Linked sessions"} (${others().length})`
+          const memoryColor = () => {
+            const value = gauge()
+            if (!value || value.max <= 0) return context.theme.text.muted
+            const ratio = value.total / value.max
+            if (ratio >= 0.85) return context.theme.text.feedback.error.base
+            if (ratio >= 0.6) return context.theme.text.feedback.warning.base
+            return context.theme.text.muted
+          }
           return (
-            <Show when={others().length > 0}>
-              <box flexDirection="column">
+            <box flexDirection="column">
+              <Show when={others().length > 0}>
                 <text fg={context.theme.text.muted} onMouseDown={() => toggle()}>{`${
                   ui.expanded ? "▾" : "▸"
                 } ${label()}`}</text>
@@ -186,8 +237,22 @@ export default Plugin.define({
                     )}
                   </For>
                 </Show>
-              </box>
-            </Show>
+              </Show>
+              <Show when={gauge()}>
+                {(memory) => (
+                  <box flexDirection="column" marginTop={1}>
+                    <text fg={context.theme.text.muted} onMouseDown={() => toggleMemory()}>{`${
+                      ui.memoryExpanded ? "▾" : "▸"
+                    } Folder memory`}</text>
+                    <Show when={ui.memoryExpanded}>
+                      <text fg={memoryColor()}>{`   ${bar(memory().total, memory().max)}  ${
+                        memory().pinned
+                      } pinned · ${memory().injected} in prompt`}</text>
+                    </Show>
+                  </box>
+                )}
+              </Show>
+            </box>
           )
         },
       })
@@ -230,6 +295,52 @@ export default Plugin.define({
               if (chosen) open(chosen)
             },
           },
+          {
+            id: "session-bus.memory",
+            title: "Folder memory",
+            description: "Read the long-term memory of this folder",
+            group: "Session bus",
+            palette: true,
+            slash: { name: "memory", aliases: ["memoire"] },
+            run: async () => {
+              if (!directory || !options.memory) {
+                await context.ui.dialog.alert({
+                  title: "Folder memory",
+                  message: "The folder memory is disabled for this location.",
+                })
+                return
+              }
+              const entries = readMemory(directory)
+              if (entries.length === 0) {
+                await context.ui.dialog.alert({
+                  title: "Folder memory",
+                  message: "Empty: nothing recorded in this folder yet (memory_write).",
+                })
+                return
+              }
+              const shown = selectEntries(entries, undefined, [], 50)
+              await context.ui.dialog.select({
+                title: `Folder memory — ${entries.length}/${options.memoryMaxEntries} (${gauge()?.pinned ?? 0} pinned)`,
+                placeholder: "Filter the entries",
+                options: shown.map((entry) => ({
+                  title: `${entry.pinned ? "★ " : ""}${(entry.hits ?? 0) > 1 ? `×${entry.hits} ` : ""}${truncate(entry.text, 90)}`,
+                  value: entry.id,
+                  description: `${entry.id} · ${entry.tags.join(", ") || "no tag"}`,
+                  footer: entry.key ? `key=${entry.key}` : undefined,
+                })),
+                search: (query, items) => {
+                  const needle = query.trim().toLowerCase()
+                  if (!needle) return items
+                  return items.filter(
+                    (item) =>
+                      item.title.toLowerCase().includes(needle) ||
+                      (item.description ?? "").toLowerCase().includes(needle) ||
+                      (item.footer ?? "").toLowerCase().includes(needle),
+                  )
+                },
+              })
+            },
+          },
         ],
       }))
     } catch {
@@ -250,4 +361,12 @@ export default Plugin.define({
 
 function short(text: string, budget: number): string {
   return text.length <= budget ? text : `${text.slice(0, Math.max(1, budget - 1))}…`
+}
+
+/** 12 cells, at least one filled as soon as something is recorded. */
+function bar(value: number, max: number, width = 12): string {
+  if (max <= 0) return "░".repeat(width)
+  const ratio = Math.max(0, Math.min(1, value / max))
+  const filled = Math.min(width, Math.max(value > 0 ? 1 : 0, Math.round(ratio * width)))
+  return `${"█".repeat(filled)}${"░".repeat(width - filled)}`
 }

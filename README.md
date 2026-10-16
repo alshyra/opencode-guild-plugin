@@ -93,11 +93,11 @@ otherwise rediscover — a contract that changed, a command that works, a choice
 - **Storage** — one append-only JSONL file per folder, outside the workspace:
   `~/.opencode/session-bus/<sha1 of the folder>/memory.jsonl`, mode `0600`. The folder is a checkout, so two
   worktrees of the same project keep separate memories. Nothing is ever written inside the project.
-- **Entry** — `{ id, at, session, title, agent, text, tags, key, pinned }`. Writing the same text twice is a
-  no-op; writing with a `key` replaces the previous entry of that key (for a value that evolves); a `pinned`
+- **Entry** — `{ id, at, session, title, agent, text, tags, key, hits, pinned }`. Writing the same text twice is
+  a no-op; writing with a `key` replaces the previous entry of that key (for a value that evolves); a `pinned`
   entry survives the size cap and comes first in the injected block.
-- **Injection** — the `context` hook appends the first `memoryInjectLines` entries (pinned first, then most
-  recent), truncated per entry. Nothing is injected while the memory is empty.
+- **Injection** — the `context` hook appends the first `memoryInjectLines` entries (pinned first, then the
+  weightiest, then the most recent), truncated per entry. Nothing is injected while the memory is empty.
 - Size — past `memoryMaxEntries` the oldest unpinned entries are dropped, rewriting the file.
   `rm -rf ~/.opencode/session-bus/<hash>` forgets a folder entirely.
 - **History** — every rewrite (a key replaced, a `forget`, a rewrite, a compression) first archives the
@@ -132,6 +132,27 @@ duplicates and near-duplicates into fewer, denser entries; the answer replaces t
 (by id, key or unambiguous text fragment) and add the consolidated ones in one atomic write, with the same
 archive guarantee.
 
+### Weight and elevation
+
+A memory that treats every note the same ends up as a flat log, and the injected block only has room for
+`memoryInjectLines` entries. So entries carry a weight, the way a human memory leans on what keeps coming
+back:
+
+- **Reinforcement** — writing the *same text* again does not add an entry: it counts (`hits`), moves the entry
+  up, and writes nothing to `history/` (a reinforcement loses nothing). A merge folds the weights of its
+  parents into the consolidated entry, so a fact does not lose its standing by being deduplicated.
+- **Ranking** — pinned first, then the weight (`hits` + the entries a merge folded in), then the most recent.
+  That order decides what fits in the injected block and what falls out of it: the triage is in the window,
+  not in a separate score to read.
+- **The mark** — `memory_read`, the injected block and the `/memory` dialog show `×N` once a fact came back.
+- **Elevation** — `memory_promote(target, pin?)` flips the standing-rule flag. Promoting asks the user first
+  (permission action `memory.promote`) because a pinned entry goes into *every* session's prompt. Demoting
+  needs no approval and archives the file: it is the only direction that loses something.
+- **Suggestion, not automation** — once a fact reached `memoryPromoteAfter` (default 3) repetitions, the write
+  reports it and suggests `memory_promote`. Nothing is pinned without a decision.
+- A `pinned: true` passed straight to `memory_write` goes through the same gate, so the elevation cannot be
+  bypassed by writing again.
+
 ## TUI
 
 - The right sidebar shows a collapsible **Linked sessions (N)** block, one line per peer of this folder:
@@ -146,6 +167,13 @@ archive guarantee.
 - `/peers` (aliases: `/sessions`, and the command palette entry "Linked sessions") opens the same list from
   the keyboard and jumps to the chosen session.
 - The block always follows the same-folder rule, whatever the `scope` option says.
+- Below it, a collapsible **Folder memory** block gauges the folder memory: a bar for the entries in use out
+  of `memoryMaxEntries`, coloured once it passes 60% and 85%, then `N pinned · M in prompt`. Click to collapse.
+- `/memory` (alias `/memoire`, palette "Folder memory") lists the entries from the keyboard, with a filter,
+  each line showing `★` for a standing rule and `×N` for a reinforced fact.
+
+Both blocks read the same folder the session lives in. The gauge reads the memory file directly: the TUI runs
+on the same host as the server plugin, which has no HTTP surface of its own.
 
 ## Options
 
@@ -174,6 +202,7 @@ archive guarantee.
         "memoryMaxEntries": 500,
         "memoryMaxChars": 2000,
         "memoryCompressAfter": 60,
+        "memoryPromoteAfter": 3,
         "debug": false
       }
     }
@@ -200,6 +229,21 @@ the prompt to appear:
 
 Answering **Allow always** saves a durable rule for that peer, so each peer asks once. Set
 `permission: "allow"` in the plugin options to never ask.
+
+The elevation of a memory entry uses the same mechanism with the action `memory.promote` (resource: the entry
+id, or the key/text for a new pinned entry), and it is opt-in the same way:
+
+```jsonc
+{
+  "permissions": [
+    { "action": "session.message", "resource": "*", "effect": "ask" },
+    { "action": "memory.promote", "resource": "*", "effect": "ask" }
+  ]
+}
+```
+
+Without that rule, OpenCode's default policy allows the elevation silently: the gate exists, the prompt does
+not. `memory_write(pinned: true)` and `memory_promote` both pass through it.
 
 ## Safety
 

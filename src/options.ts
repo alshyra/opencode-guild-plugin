@@ -33,6 +33,8 @@ export interface SessionBusOptions {
   readonly memoryMaxChars: number
   /** Suggest a compression once the memory holds this many entries. 0 disables the nudge. */
   readonly memoryCompressAfter: number
+  /** Suggest elevating a fact to a standing rule once it came back this many times. */
+  readonly memoryPromoteAfter: number
 }
 
 export const defaultOptions: SessionBusOptions = {
@@ -56,6 +58,7 @@ export const defaultOptions: SessionBusOptions = {
   memoryMaxEntries: 500,
   memoryMaxChars: 2000,
   memoryCompressAfter: 60,
+  memoryPromoteAfter: 3,
 }
 
 function pick<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
@@ -97,5 +100,6 @@ export function resolveOptions(raw: Readonly<Record<string, unknown>>): SessionB
     memoryMaxEntries: positive(raw["memoryMaxEntries"], defaultOptions.memoryMaxEntries),
     memoryMaxChars: positive(raw["memoryMaxChars"], defaultOptions.memoryMaxChars),
     memoryCompressAfter: nonNegative(raw["memoryCompressAfter"], defaultOptions.memoryCompressAfter),
+    memoryPromoteAfter: positive(raw["memoryPromoteAfter"], defaultOptions.memoryPromoteAfter),
   }
 }

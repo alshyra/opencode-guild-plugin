@@ -27,8 +27,7 @@ Both entry files must stay at the repository root: the loader resolves a plugin 
 - `src/guards.ts` — hop counter and rate limit.
 - `src/options.ts` — option parsing with defaults.
 - `src/skill.ts` — the `session-bus` skill registered by the plugin.
-- `src/tui.tsx` — sidebar counter + `/peers` command.
-
+- `src/tui.tsx` — sidebar blocks: linked sessions and the memory gauge, plus the `/peers` and `/memory` commands.
 ## Rules
 
 - No runtime dependency: `@opencode/plugin` is provided by the host. Keep it, OpenTUI and solid-js in
@@ -54,6 +53,13 @@ Both entry files must stay at the repository root: the loader resolves a plugin 
   messages — never from an event name, which is not documented. The sub-line is cached 30s per peer, and it
   must never imply work that is not happening: `running: …` only for a tool whose state is running/streaming,
   `last: …` only while the peer executes, nothing for an idle peer.
+- The memory gauge reads `memory.jsonl` directly (same host as the server plugin) and takes its cap from the
+  same `resolveOptions`, so the TUI and the server can never disagree about the maximum.
+- `hits` is written to disk as soon as it reaches 1. Parsing it back with a `> 1` filter looks harmless and
+  breaks the counter silently: the store would restart from zero at every reinforcement.
+- `#rewrite` archives by default because a rewrite is what can lose an entry. A reinforcement and a promotion
+  pass `archive: false`: they only add weight or a flag, so `history/` keeps meaning "a state where something
+  disappeared". A demotion archives.
 - The folder memory is one file per folder, `~/.opencode/session-bus/<sha1 of the folder>/memory.jsonl`, never
   inside the project: a folder is a checkout, so worktrees do not share it. Writes append; a rewrite (key
   replaced, cap reached, entry forgotten) always re-reads the file first and goes through `tmp + rename`, so a
@@ -94,7 +100,11 @@ There is no test suite: verify against a live service.
    pinned ones must survive verbatim, `history/` must hold the byte-identical previous file, and a `dry_run`
    must leave the file untouched. The refusal branches (model failure, invalid JSON, no gain, nothing to
    merge) are covered by a stub context instead of a model call.
-7. Test drivers used during development: `~/tmp/oc/bus-test*.py` (peers), `~/tmp/oc/mem-live-test.py`
+7. Weight and elevation: `bun ~/tmp/oc/mem-weight-check.ts` drives `MemoryStore` directly (no service, no
+   model): reinforcement, disk round-trip of `hits`, weight inherited by a merge, the ranking used by the
+   injected block, promote/demote and their archive behaviour.
+8. Test drivers used during development: `~/tmp/oc/bus-test*.py` (peers), `~/tmp/oc/mem-live-test.py`
    (memory), `~/tmp/oc/mem-compress-unit.ts` and `~/tmp/oc/mem-compress-refusals.ts` (pure functions and
-   compression branches, run with `HOME=<sandbox> bun run`), `~/tmp/oc/mem-compress-live.py` (live
-   compression, guarded by `--yes`).
+   compression branches, run with `HOME=<sandbox> bun run`), `~/tmp/oc/mem-compress-live.py` and
+   `~/tmp/oc/mem-compress-live-hard.py` (live compression, guarded by `--yes`), `~/tmp/oc/mem-weight-check.ts`
+   (weight and elevation against `MemoryStore`).

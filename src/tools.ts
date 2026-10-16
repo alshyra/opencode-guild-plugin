@@ -383,7 +383,22 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
           .map((tag) => String(tag).trim())
           .filter(Boolean)
           .slice(0, MAX_TAGS)
+        const key = typeof input.key === "string" && input.key.trim() ? input.key.trim() : undefined
+        const pinned = input.pinned === true
         try {
+          // Elevation: pinning pushes a line into every session's prompt, so it
+          // is gated. A plain note is not.
+          if (pinned) {
+            await deps.ctx.permission.assert({
+              sessionID: context.sessionID,
+              agent: context.agent,
+              action: "memory.promote",
+              resources: [key ?? truncate(text, 60)],
+              save: [key ?? truncate(text, 60)],
+              source: { type: "tool", messageID: context.messageID, id: context.id },
+              metadata: { text: truncate(text, 120), pinned: true },
+            })
+          }
           const sender = await senderInfo(deps, context.sessionID)
           const result = deps.memory.write({
             session: sender.id,
@@ -391,21 +406,86 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
             ...(context.agent ? { agent: context.agent } : {}),
             text,
             tags,
-            ...(typeof input.key === "string" && input.key.trim() ? { key: input.key.trim() } : {}),
-            pinned: input.pinned === true,
+            ...(key ? { key } : {}),
+            pinned,
           })
           const where = deps.ctx.location.directory
           if (result.duplicate) {
+            const hits = result.entry.hits ?? 0
+            const nudge =
+              !result.entry.pinned && hits >= deps.options.memoryPromoteAfter
+                ? ` This fact has now come back ${hits} times: if it is a standing rule, elevate it with memory_promote(target="${result.entry.id}").`
+                : ""
             return {
-              content: `Already in the folder memory of ${where} as ${result.entry.id}: "${truncate(result.entry.text, 120)}". Nothing was added.`,
-              metadata: { id: result.entry.id, duplicate: true, total: result.total },
+              content: `Already in the folder memory of ${where} as ${result.entry.id} (×${hits}): "${truncate(result.entry.text, 120)}". Its weight grew; nothing was added.${nudge}`,
+              metadata: { id: result.entry.id, duplicate: true, hits, total: result.total },
             }
           }
           const replaced = result.replaced ? `, replaced the previous entry for key "${result.entry.key ?? ""}"` : ""
           const dropped = result.dropped > 0 ? `, dropped ${result.dropped} oldest unpinned entry(ies)` : ""
+          const weight = result.entry.hits ? ` (×${result.entry.hits})` : ""
           return {
-            content: `Recorded in the folder memory of ${where} as ${result.entry.id} (${result.total} entries${replaced}${dropped}).`,
+            content: `Recorded in the folder memory of ${where} as ${result.entry.id}${weight} (${result.total} entries${replaced}${dropped}).`,
             metadata: { id: result.entry.id, duplicate: false, total: result.total },
+          }
+        } catch (cause) {
+          return { content: errorText(cause) }
+        }
+      },
+    })
+
+    editor.add({
+      name: "memory_promote",
+      description:
+        "Elevate one folder-memory entry to a standing rule (or demote it): a pinned entry comes first in the injected block, " +
+        "survives the entry cap and is never touched by a compression. Use it when a fact keeps coming back, or when the user " +
+        "decides something must always hold. Promoting asks the user first: it changes what every session of the folder reads. " +
+        "Demoting needs no approval and archives the file.",
+      input: {
+        type: "object",
+        properties: {
+          target: {
+            type: "string",
+            description: "The entry: its id (mem_...), its key, or an unambiguous fragment of its text.",
+          },
+          pin: {
+            type: "boolean",
+            description: "true (default) makes it a standing rule, false demotes it back to a normal note.",
+          },
+        },
+        required: ["target"],
+        additionalProperties: false,
+      },
+      execute: async (raw, context) => {
+        const input = (raw ?? {}) as { target?: string; pin?: boolean }
+        const target = String(input.target ?? "").trim()
+        if (!target) return { content: "Nothing to promote: the target is empty." }
+        const pin = input.pin !== false
+        try {
+          const matches = deps.memory.all().filter((entry) => entry.id === target || entry.key === target)
+          const entry = matches.length === 1 ? matches[0] : undefined
+          if (pin) {
+            await deps.ctx.permission.assert({
+              sessionID: context.sessionID,
+              agent: context.agent,
+              action: "memory.promote",
+              resources: [entry?.id ?? target],
+              save: [entry?.id ?? target],
+              source: { type: "tool", messageID: context.messageID, id: context.id },
+              metadata: { target, text: truncate(entry?.text ?? "", 120) },
+            })
+          }
+          const result = deps.memory.promote(target, pin)
+          if ("error" in result) return { content: result.error }
+          if (!result.changed) {
+            return {
+              content: `${result.entry.id} is already ${pin ? "a standing rule" : "a normal note"}: nothing changed.`,
+            }
+          }
+          const archive = result.archive ? ` Previous file archived at ${result.archive}.` : ""
+          return {
+            content: `${pin ? "Promoted" : "Demoted"} ${result.entry.id}: ${pin ? "it now comes first in the injected block" : "it is a normal note again"}.${archive}`,
+            metadata: { id: result.entry.id, pinned: result.entry.pinned },
           }
         } catch (cause) {
           return { content: errorText(cause) }
