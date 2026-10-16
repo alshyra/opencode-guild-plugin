@@ -102,11 +102,16 @@ entry: `memory_forget` it as soon as you notice.
 
 ## TUI
 
-- The right sidebar shows `-- N linked sessions --` followed by one line per peer (`*` = working now,
-  `-` = idle). Nothing is shown when no other session works in the folder.
-- `/peers` (aliases: `/sessions`, and the command palette entry "Linked sessions") opens the list and jumps
-  to the chosen session.
-- The counter always follows the same-folder rule, whatever the `scope` option says.
+- The right sidebar shows a collapsible **Linked sessions (N)** block, one line per peer of this folder:
+  `●` working now, `○` idle (idle lines are dimmed), with the peer's last tool call underneath
+  (`shell: npm test`, `edit: src/foo.ts`). Nothing is shown when no other session works in the folder.
+- **Click the title** to collapse or expand it. The state is durable and shared between TUI instances;
+  collapsed, the block is still `▸ Linked sessions (2)`.
+- **Click a session line** to open or focus that session's tab. It also clears the peer's unread marker
+  (`•`), shown when a peer wrote to this session within the last 15 minutes.
+- `/peers` (aliases: `/sessions`, and the command palette entry "Linked sessions") opens the same list from
+  the keyboard and jumps to the chosen session.
+- The block always follows the same-folder rule, whatever the `scope` option says.
 
 ## Options
 

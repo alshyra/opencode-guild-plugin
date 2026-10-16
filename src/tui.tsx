@@ -1,28 +1,97 @@
 /** @jsxImportSource @opentui/solid */
 import { For, Show, createSignal } from "solid-js"
 import { Plugin } from "@opencode/plugin/tui"
-import { type Peer, type SessionLike, peerCountLabel, selectPeers } from "./peers"
+import {
+  type Peer,
+  type SessionLike,
+  type SessionMessageLike,
+  countPeerMessages,
+  lastToolUse,
+  selectPeers,
+} from "./peers"
 
 const REFRESH_MS = 15_000
 const DEBOUNCE_MS = 1_500
 const IDLE_MS = 15 * 60_000
-const MAX_PEERS = 20
+const MAX_PEERS = 8
+const ACTIVITY_TTL_MS = 30_000
+/** A peer message stops showing as unread after this long, even without a click. */
+const UNREAD_WINDOW_MS = 15 * 60_000
+const STORE_KEY = "session-bus"
+const SEEN_KEY = "session-bus.seen"
+
+interface Row {
+  readonly peer: Peer
+  readonly activity?: string
+  readonly unread: boolean
+}
 
 /**
- * TUI counterpart of the session-bus server plugin: a counter of the other
- * sessions working in the same folder, in the right-hand sidebar, plus a
- * `/peers` command to jump to one of them.
+ * TUI half of the session-bus plugin: a collapsible "Linked sessions" block in
+ * the right sidebar. The title toggles it, a line opens that session's tab, and
+ * a click marks the peer's messages as read.
  */
 export default Plugin.define({
   id: "session-bus.tui",
 
   setup(context) {
-    const [peers, setPeers] = createSignal<readonly Peer[]>([])
+    const [rows, setRows] = createSignal<readonly Row[]>([])
+    const [hovered, setHovered] = createSignal<string | undefined>()
+    const [ui, updateUi] = context.storage.store(STORE_KEY, { initial: { expanded: true } })
+    const [seen, updateSeen] = context.storage.memory(SEEN_KEY, { initial: {} as Record<string, number> })
+
     const directory = context.location?.directory
     const cleanups: Array<() => void> = []
+    const activityCache = new Map<string, { at: number; value?: string }>()
+    let selfSessionID: string | undefined
+
+    const markSeen = (peerID: string) => updateSeen((draft) => void (draft[peerID] = Date.now()))
+
+    const toggle = () => void updateUi((draft) => void (draft.expanded = !draft.expanded))
+
+    const open = (peerID: string) => {
+      markSeen(peerID)
+      if (!context.ui.tabs.focus(peerID)) context.ui.router.navigate({ type: "session", sessionID: peerID })
+    }
+
+    /** Last tool the peer ran, cached: the sidebar must stay cheap. */
+    const activityOf = async (peer: Peer): Promise<string | undefined> => {
+      const cached = activityCache.get(peer.id)
+      if (cached && Date.now() - cached.at < ACTIVITY_TTL_MS) return cached.value
+      let value = cached?.value
+      try {
+        const response = await context.client.message.list({ sessionID: peer.id, limit: 20 })
+        const tool = lastToolUse(response.data as readonly SessionMessageLike[])
+        value = tool ? `${tool.name}${tool.hint ? `: ${tool.hint}` : ""}${tool.failed ? " (failed)" : ""}` : undefined
+      } catch {
+        // keep the previous value
+      }
+      activityCache.set(peer.id, { at: Date.now(), value })
+      return value
+    }
+
+    /** Peer wrote to this session since the last click, inside the unread window. */
+    const unreadOf = async (peerID: string): Promise<boolean> => {
+      if (!selfSessionID) return false
+      try {
+        const response = await context.client.message.list({
+          sessionID: selfSessionID,
+          limit: 30,
+          type: "synthetic",
+        })
+        const since = Math.max(seen[peerID] ?? 0, Date.now() - UNREAD_WINDOW_MS)
+        return countPeerMessages(response.data as readonly SessionMessageLike[], peerID, since) > 0
+      } catch {
+        return false
+      }
+    }
 
     const refresh = async () => {
       if (!directory) return
+      if (!selfSessionID) {
+        const current = context.ui.router.current()
+        if (current.type === "session") selfSessionID = current.sessionID
+      }
       try {
         const [listed, active] = await Promise.all([
           context.client.session.list({ directory, limit: 100 }),
@@ -33,18 +102,22 @@ export default Plugin.define({
             .filter(([, value]) => value?.type === "running")
             .map(([id]) => id),
         )
-        setPeers(
-          selectPeers(((listed as { data?: readonly SessionLike[] }).data ?? []) as readonly SessionLike[], {
-            scope: "directory",
-            directory,
-            includeIdle: false,
-            idleWindowMs: IDLE_MS,
-            maxPeers: MAX_PEERS,
-            running,
-          }),
-        )
+        const peers = selectPeers(((listed as { data?: readonly SessionLike[] }).data ?? []) as readonly SessionLike[], {
+          scope: "directory",
+          directory,
+          includeIdle: false,
+          idleWindowMs: IDLE_MS,
+          maxPeers: MAX_PEERS,
+          running,
+        })
+        const next: Row[] = []
+        for (const peer of peers) {
+          const [activity, unread] = await Promise.all([activityOf(peer), unreadOf(peer.id)])
+          next.push({ peer, activity, unread })
+        }
+        setRows(next)
       } catch {
-        // The sidebar must never break the TUI: keep the last known list.
+        // Keep the last known list: the sidebar must never break the TUI.
       }
     }
 
@@ -69,20 +142,50 @@ export default Plugin.define({
       cleanups.push(() => debounce && clearTimeout(debounce))
     }
 
+    const titleBudget = () => Math.max(14, Math.min(32, Math.floor(context.renderer.terminalWidth * 0.26)))
+
     try {
       context.ui.slot({
         append: "sidebar.content",
         render: ({ sessionID }) => {
-          const others = () => peers().filter((peer) => peer.id !== sessionID)
+          selfSessionID = sessionID
+          const others = () => rows().filter((row) => row.peer.id !== sessionID)
+          const label = () =>
+            `${others().length === 1 ? "Linked session" : "Linked sessions"} (${others().length})`
           return (
             <Show when={others().length > 0}>
               <box flexDirection="column">
-                <text>{`-- ${peerCountLabel(others().length)} --`}</text>
-                <For each={others()}>
-                  {(peer) => (
-                    <text>{`${peer.running ? "*" : "-"} ${peer.handle} ${short(peer.title)}`}</text>
-                  )}
-                </For>
+                <text fg={context.theme.text.muted} onMouseDown={() => toggle()}>{`${
+                  ui.expanded ? "▾" : "▸"
+                } ${label()}`}</text>
+                <Show when={ui.expanded}>
+                  <For each={others()}>
+                    {(row) => (
+                      <box
+                        flexDirection="column"
+                        onMouseDown={(event?: { stopPropagation?: () => void }) => {
+                          event?.stopPropagation?.()
+                          open(row.peer.id)
+                        }}
+                        onMouseOver={() => setHovered(row.peer.id)}
+                        onMouseOut={() => setHovered((current) => (current === row.peer.id ? undefined : current))}
+                      >
+                        <text
+                          fg={row.peer.running ? context.theme.text.base : context.theme.text.muted}
+                          bg={hovered() === row.peer.id ? context.theme.background.raised.base : undefined}
+                        >
+                          {`${row.peer.running ? "●" : "○"} ${row.peer.handle}  ${short(
+                            row.peer.title,
+                            titleBudget(),
+                          )}${row.unread ? " •" : ""}`}
+                        </text>
+                        <Show when={row.activity}>
+                          <text fg={context.theme.text.muted}>{`   ${short(row.activity ?? "", titleBudget())}`}</text>
+                        </Show>
+                      </box>
+                    )}
+                  </For>
+                </Show>
               </box>
             </Show>
           )
@@ -107,7 +210,7 @@ export default Plugin.define({
             run: async () => {
               const current = context.ui.router.current()
               const self = current.type === "session" ? current.sessionID : undefined
-              const list = peers().filter((peer) => peer.id !== self)
+              const list = rows().filter((row) => row.peer.id !== self)
               if (list.length === 0) {
                 await context.ui.dialog.alert({
                   title: "Session bus",
@@ -117,15 +220,14 @@ export default Plugin.define({
               }
               const chosen = await context.ui.dialog.select({
                 title: "Linked sessions",
-                options: list.map((peer) => ({
-                  title: `${peer.handle} ${peer.title}`,
-                  value: peer.id,
-                  description: peer.directory,
-                  footer: peer.running ? "working now" : "idle",
+                options: list.map((row) => ({
+                  title: `${row.peer.handle} ${row.peer.title}`,
+                  value: row.peer.id,
+                  description: row.activity ? `${row.peer.directory} — ${row.activity}` : row.peer.directory,
+                  footer: row.peer.running ? "working now" : "idle",
                 })),
               })
-              if (!chosen) return
-              if (!context.ui.tabs.focus(chosen)) context.ui.router.navigate({ type: "session", sessionID: chosen })
+              if (chosen) open(chosen)
             },
           },
         ],
@@ -146,6 +248,6 @@ export default Plugin.define({
   },
 })
 
-function short(title: string): string {
-  return title.length <= 24 ? title : `${title.slice(0, 23)}…`
+function short(text: string, budget: number): string {
+  return text.length <= budget ? text : `${text.slice(0, Math.max(1, budget - 1))}…`
 }

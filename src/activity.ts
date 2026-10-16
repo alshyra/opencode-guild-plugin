@@ -1,21 +1,6 @@
 import type { Api } from "./api"
-import { type Peer, describePeer } from "./peers"
+import { type Peer, type SessionMessageLike, describePeer, oneLine, toolHint } from "./peers"
 import { humanAge, truncate } from "./log"
-
-interface MessagePart {
-  readonly type?: string
-  readonly text?: string
-  readonly name?: string
-  readonly state?: { readonly status?: string; readonly input?: unknown; readonly error?: unknown }
-  readonly content?: readonly MessagePart[]
-}
-
-interface SessionMessage {
-  readonly type?: string
-  readonly time?: { readonly created?: number }
-  readonly text?: string
-  readonly content?: readonly MessagePart[]
-}
 
 interface FileChange {
   readonly file?: string
@@ -36,8 +21,8 @@ export interface ActivityOptions {
 export async function describeActivity(api: Api, peer: Peer, options: ActivityOptions): Promise<string> {
   const [messages, sessionDiff, status] = await Promise.all([
     api
-      .get<readonly SessionMessage[]>(`/api/session/${peer.id}/message`, { limit: options.messages * 3 })
-      .catch(() => [] as readonly SessionMessage[]),
+      .get<readonly SessionMessageLike[]>(`/api/session/${peer.id}/message`, { limit: options.messages * 3 })
+      .catch(() => [] as readonly SessionMessageLike[]),
     api.get<readonly FileChange[]>(`/api/session/${peer.id}/diff`).catch(() => [] as readonly FileChange[]),
     peer.directory
       ? api
@@ -101,18 +86,4 @@ function describeChange(change: FileChange): string {
     .filter(Boolean)
     .join("/")
   return `${change.file ?? "?"} (${change.status ?? "changed"}${counts ? `, ${counts}` : ""})`
-}
-
-function toolHint(input: unknown): string {
-  if (!input || typeof input !== "object") return ""
-  const record = input as Record<string, unknown>
-  for (const key of ["command", "filePath", "path", "file", "pattern", "description", "url", "target", "query"]) {
-    const value = record[key]
-    if (typeof value === "string" && value.trim()) return truncate(oneLine(value), 100)
-  }
-  return ""
-}
-
-function oneLine(text: string): string {
-  return text.replace(/\s+/g, " ").trim()
 }

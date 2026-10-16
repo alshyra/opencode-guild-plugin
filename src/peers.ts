@@ -88,6 +88,68 @@ export function describePeer(peer: Peer, now = Date.now()): string {
   return `${peer.handle} "${truncate(peer.title, 70)}"${agent}, ${status}`
 }
 
-export function peerCountLabel(count: number): string {
-  return count === 1 ? "1 linked session" : `${count} linked sessions`
+/** Structural shapes for the message payloads the client and the API return. */
+export interface MessagePartLike {
+  readonly type?: string
+  readonly text?: string
+  readonly name?: string
+  readonly state?: { readonly status?: string; readonly input?: unknown }
+  readonly content?: readonly MessagePartLike[]
+}
+
+export interface SessionMessageLike {
+  readonly type?: string
+  readonly time?: { readonly created?: number }
+  readonly text?: string
+  readonly metadata?: Record<string, unknown>
+  readonly content?: readonly MessagePartLike[]
+}
+
+export interface ToolUse {
+  readonly name: string
+  readonly hint?: string
+  readonly failed: boolean
+}
+
+/** Last tool a session ran: the "what is it doing right now" one-liner. */
+export function lastToolUse(messages: readonly SessionMessageLike[]): ToolUse | undefined {
+  const ordered = [...messages].sort((left, right) => (left.time?.created ?? 0) - (right.time?.created ?? 0))
+  let found: ToolUse | undefined
+  for (const message of ordered) {
+    if (message.type !== "assistant") continue
+    for (const part of message.content ?? []) {
+      if (part.type !== "tool" || !part.name) continue
+      const hint = toolHint(part.state?.input)
+      found = { name: part.name, failed: part.state?.status === "error", ...(hint ? { hint } : {}) }
+    }
+  }
+  return found
+}
+
+/** Peer messages still newer than the last acknowledgement, inside the unread window. */
+export function countPeerMessages(
+  messages: readonly SessionMessageLike[],
+  peerID: string,
+  since: number,
+): number {
+  return messages.filter(
+    (message) =>
+      message.type === "synthetic" &&
+      message.metadata?.["from"] === peerID &&
+      (message.time?.created ?? 0) > since,
+  ).length
+}
+
+export function toolHint(input: unknown): string {
+  if (!input || typeof input !== "object") return ""
+  const record = input as Record<string, unknown>
+  for (const key of ["command", "filePath", "path", "file", "pattern", "description", "url", "target", "query"]) {
+    const value = record[key]
+    if (typeof value === "string" && value.trim()) return truncate(oneLine(value), 100)
+  }
+  return ""
+}
+
+export function oneLine(text: string): string {
+  return text.replace(/\s+/g, " ").trim()
 }
