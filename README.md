@@ -93,8 +93,15 @@ waits for a message, not for a status.
 parallel with yours. `peers_delegate` is the asynchronous counterpart: it delivers the task, returns at once,
 and registers the exchange (`dlg_…`). The peer is told to report back, and the report is an ordinary peer
 delivery — sent with `resume: true`, so it **wakes the requester** instead of being polled. `peers_delegations`
-lists what is still outstanding, and a message from the asked peer resolves the matching delegation. Use
-`peers_ask` only when you cannot continue without the answer right now; otherwise delegate and keep working.
+lists what is still outstanding. The report closes the delegation it answers: the request carries the id and
+the peer is asked to send it back as `reply_to`, so the match is exact; a report that quotes nothing still
+closes it by pair. Use `peers_ask` only when you cannot continue without the answer right now; otherwise
+delegate and keep working.
+
+Two limits worth knowing. The registry lives in the plugin instance of a *location*, so `scope: "project"`
+across two checkouts cannot match the reply and the delegation stays listed. And the wake is a *model* wake:
+if the peer's send is blocked by the rate limit, the hop cap or a denied permission, no report is ever written
+and nobody is told — the TUI notification below is what makes an arrival visible to the human.
 
 ## Memory of the folder
 
@@ -187,6 +194,9 @@ back:
   collapsed, the block is still `▸ Linked sessions (2)`.
 - **Click a session line** to open or focus that session's tab. It also clears the peer's unread marker
   (`•`), shown when a peer wrote to this session within the last 15 minutes.
+- When the terminal is in the background and a peer message arrives, a **desktop notification** is raised
+  (`context.attention.notify`, once per arrival, never on the first pass, same 15-minute window as the unread
+  marker). It is what turns a resumed turn — the async delegation's wake — into something the human sees.
 - `/peers` (aliases: `/sessions`, and the command palette entry "Linked sessions") opens the same list from
   the keyboard and jumps to the chosen session.
 - The block always follows the same-folder rule, whatever the `scope` option says.

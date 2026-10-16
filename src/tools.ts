@@ -7,9 +7,9 @@ import type { MemoryStore } from "./memory"
 import { type Peer, describePeer } from "./peers"
 import { BUS_ID, renderPeerMessage, stripPeerEnvelope, type PeerMessageKind, type PeerMessageMeta } from "./envelope"
 import { describeActivity } from "./activity"
-import { MAX_TAGS, describeEntry, isStale, selectEntries, type MemoryDigest, type MemoryEntry } from "./memory"
+import { isDelegationRequest, type Delegations } from "./delegations"
+import { describeEntry, isStale, normalizeTags, selectEntries, type MemoryDigest, type MemoryEntry } from "./memory"
 import { compressMemory, type CompressReport } from "./compress"
-import type { Delegations } from "./delegations"
 import { humanAge, log, truncate, warn } from "./log"
 
 export interface Deps {
@@ -38,6 +38,7 @@ interface SendInput {
   readonly target?: string
   readonly message?: string
   readonly expect_reply?: boolean
+  readonly reply_to?: string
 }
 
 interface AskInput {
@@ -94,7 +95,9 @@ interface MemoryCompressInput {
 const TARGET_PROPERTY = {
   type: "string",
   description:
-    "The peer session: the number from peers_list, a session id (ses_...) or a unique session id prefix.",
+    "The peer session: a session id (ses_...), a unique session id prefix, or the number from the peers_list of " +
+    "this same turn. The numbers are positional and can point at another session in a later turn: prefer the id " +
+    "once you have it.",
 } as const
 
 export async function registerTools(ctx: Ctx, deps: Deps) {
@@ -165,6 +168,11 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
             type: "boolean",
             description: "Ask the peer to answer you. Defaults to false.",
           },
+          reply_to: {
+            type: "string",
+            description:
+              "Optional: the delegation id (dlg_...) this message answers, echoed from the request. Send it so the peer can match your report to the task.",
+          },
         },
         required: ["target", "message"],
         additionalProperties: false,
@@ -176,6 +184,7 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
         if (invalid) return { content: invalid }
         const peer = await resolveInputPeer(deps, context, input.target)
         if (typeof peer === "string") return { content: peer }
+        const replyTo = typeof input.reply_to === "string" && input.reply_to.trim() ? input.reply_to.trim() : undefined
         try {
           const result = await deliver(deps, {
             caller: callerOf(context),
@@ -183,6 +192,7 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
             body,
             kind: "note",
             expectReply: input.expect_reply === true,
+            ...(replyTo ? { replyTo } : {}),
           })
           return {
             content: `Delivered to ${peer.handle} "${peer.title}" (${deliveryLabel(peer, result.delivery)}).`,
@@ -388,6 +398,7 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
             body,
             kind: "handoff",
             expectReply: true,
+            delegation: delegation.id,
           })
           return {
             content:
@@ -477,10 +488,7 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
             content: `Too long (${text.length} characters, limit ${deps.options.memoryMaxChars}). Keep one fact per entry and split the rest.`,
           }
         }
-        const tags = (Array.isArray(input.tags) ? input.tags : [])
-          .map((tag) => String(tag).trim())
-          .filter(Boolean)
-          .slice(0, MAX_TAGS)
+        const tags = normalizeTags(input.tags)
         const key = typeof input.key === "string" && input.key.trim() ? input.key.trim() : undefined
         const pinned = input.pinned === true
         try {
@@ -744,10 +752,7 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
               content: `Nothing was written: one of the entries is too long (${text.length} characters, limit ${deps.options.memoryMaxChars}).`,
             }
           }
-          const tags = (Array.isArray(draft?.tags) ? (draft.tags as readonly string[]) : [])
-            .map((tag) => String(tag).trim())
-            .filter(Boolean)
-            .slice(0, MAX_TAGS)
+          const tags = normalizeTags(draft?.tags)
           const key = typeof draft?.key === "string" && draft.key.trim() ? draft.key.trim() : undefined
           digests.push({ text, tags, ...(key ? { key } : {}) })
         }
@@ -858,6 +863,10 @@ interface DeliverInput {
   readonly body: string
   readonly kind: PeerMessageKind
   readonly expectReply: boolean
+  /** Set when this message *is* a delegation: the id the peer must quote back. */
+  readonly delegation?: string
+  /** Set when this message *answers* a delegation: the id it answers. */
+  readonly replyTo?: string
 }
 
 async function deliver(deps: Deps, input: DeliverInput): Promise<{ delivery: string; hop: number }> {
@@ -881,6 +890,8 @@ async function deliver(deps: Deps, input: DeliverInput): Promise<{ delivery: str
     kind: input.kind,
     hop,
     ts: Date.now(),
+    ...(input.delegation ? { delegation: input.delegation } : {}),
+    ...(input.replyTo ? { replyTo: input.replyTo } : {}),
   }
   const delivered = await deps.ctx.session.synthetic({
     sessionID: input.peer.id,
@@ -891,10 +902,15 @@ async function deliver(deps: Deps, input: DeliverInput): Promise<{ delivery: str
     resume: true,
   })
   deps.guards.noteDelivery(input.peer.id, input.caller.sessionID, hop)
-  // A message from a peer to a session that delegated something to it is the
-  // report that delegation was waiting for; the same delivery resumes the
+  // A report closes the delegation it answers: explicitly by `reply_to`, or —
+  // as a fallback — any message from the asked peer that is not itself a
+  // delegation request coming the other way. The same delivery resumes the
   // requester, so the wake-up and the bookkeeping happen together.
-  const answered = deps.delegations.resolve(input.peer.id, input.caller.sessionID)
+  const answered = input.replyTo
+    ? deps.delegations.resolveById(input.replyTo)
+    : isDelegationRequest(input.kind, input.expectReply)
+      ? undefined
+      : deps.delegations.resolvePair(input.peer.id, input.caller.sessionID)
   if (answered) log(`delegation ${answered.id} answered by ${input.caller.sessionID}`)
   log(`delivered ${input.kind} ${sender.id} -> ${input.peer.id} (${delivered?.delivery ?? "unknown"}, hop ${hop})`)
   return { delivery: String(delivered?.delivery ?? "queued"), hop }

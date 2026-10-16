@@ -117,6 +117,31 @@ export type MemoryReplaceResult =
 /** A memory entry is a line a colleague reads: a handful of labels is enough. */
 export const MAX_TAGS = 8
 
+/**
+ * A tag is a label, not a sentence. The tag index is injected on every request,
+ * so an unbounded tag would be paid for by every session of the folder: cap it
+ * at the write and truncate again when reading an older file.
+ */
+export const MAX_TAG_CHARS = 32
+
+/** Trims, collapses spaces, drops blanks and duplicates, caps length and count. */
+export function normalizeTags(input: unknown, limit = MAX_TAGS): readonly string[] {
+  if (!Array.isArray(input)) return []
+  const seen = new Set<string>()
+  const tags: string[] = []
+  for (const value of input) {
+    if (typeof value !== "string") continue
+    const tag = value.replace(/\s+/g, " ").trim().slice(0, MAX_TAG_CHARS)
+    if (!tag) continue
+    const key = tag.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    tags.push(tag)
+    if (tags.length >= limit) break
+  }
+  return tags
+}
+
 /** Root of the per-folder memory: `~/.opencode/session-bus/<hash>/`. */
 export function memoryRoot(home: string = homedir()): string {
   return join(home, ".opencode", "session-bus")
@@ -513,7 +538,7 @@ export function topicsOf(
   const counts = new Map<string, number>()
   for (const entry of entries) {
     for (const tag of entry.tags) {
-      const key = tag.trim().toLowerCase()
+      const key = tag.replace(/\s+/g, " ").trim().toLowerCase().slice(0, MAX_TAG_CHARS)
       if (!key) continue
       counts.set(key, (counts.get(key) ?? 0) + 1)
     }

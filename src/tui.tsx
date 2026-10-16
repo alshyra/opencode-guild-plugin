@@ -24,6 +24,8 @@ const ACTIVITY_TTL_MS = 30_000
 const UNREAD_WINDOW_MS = 15 * 60_000
 const STORE_KEY = "session-bus"
 const SEEN_KEY = "session-bus.seen"
+/** Last peer message already announced to the human, so one arrival notifies once. */
+const NOTIFIED_KEY = "session-bus.notified"
 
 interface Row {
   readonly peer: Peer
@@ -56,6 +58,11 @@ export default Plugin.define({
       initial: { expanded: true, memoryExpanded: true },
     })
     const [seen, updateSeen] = context.storage.memory(SEEN_KEY, { initial: {} as Record<string, number> })
+    const [notified, updateNotified] = context.storage.memory(NOTIFIED_KEY, {
+      initial: {} as Record<string, number>,
+    })
+    /** The first pass only records where the conversations stood: an old message is not news. */
+    let armed = false
 
     const directory = context.location?.directory
     const cleanups: Array<() => void> = []
@@ -121,18 +128,55 @@ export default Plugin.define({
     }
 
     /** Peer wrote to this session since the last click, inside the unread window. */
-    const unreadOf = async (peerID: string): Promise<boolean> => {
-      if (!selfSessionID) return false
+    const inboxOf = async (peerID: string): Promise<{ unread: boolean; latest: number }> => {
+      if (!selfSessionID) return { unread: false, latest: 0 }
       try {
         const response = await context.client.message.list({
           sessionID: selfSessionID,
           limit: 30,
           type: "synthetic",
         })
+        const messages = response.data as readonly SessionMessageLike[]
         const since = Math.max(seen[peerID] ?? 0, Date.now() - UNREAD_WINDOW_MS)
-        return countPeerMessages(response.data as readonly SessionMessageLike[], peerID, since) > 0
+        return {
+          unread: countPeerMessages(messages, peerID, since) > 0,
+          // The offscreen notification reports the same window as the sidebar:
+          // what is not shown as unread is not announced either.
+          latest: Math.max(
+            0,
+            ...messages
+              .filter((message) => message.metadata?.["from"] === peerID)
+              .map((message) => message.time?.created ?? 0),
+          ),
+        }
       } catch {
-        return false
+        return { unread: false, latest: 0 }
+      }
+    }
+
+    /**
+     * Tell the human a peer wrote, once per arrival and never on the first pass:
+     * a peer report that lands while the terminal is in the background is
+     * exactly what goes unnoticed. Cheap by construction — it reuses the inbox
+     * read the sidebar already does, and `attention.notify` skips itself when
+     * the terminal is focused.
+     */
+    const announce = (peer: Peer, latest: number): void => {
+      if (latest <= 0 || latest <= (notified[peer.id] ?? 0) || latest <= (seen[peer.id] ?? 0)) return
+      updateNotified((draft) => void (draft[peer.id] = latest))
+      if (!armed) return
+      const current = context.ui.router.current()
+      if (current.type === "session" && current.sessionID === peer.id) return
+      try {
+        context.attention
+          .notify({
+            title: "Session bus",
+            message: `${peer.handle} "${short(peer.title, 40)}" wrote to you`,
+            notification: true,
+          })
+          .catch(() => undefined)
+      } catch {
+        // A notification must never break the sidebar.
       }
     }
 
@@ -161,12 +205,19 @@ export default Plugin.define({
           running,
         })
         const next: Row[] = []
+        const arrivals: Array<{ peer: Peer; latest: number }> = []
         for (const peer of peers) {
-          const [activity, unread] = await Promise.all([activityOf(peer), unreadOf(peer.id)])
-          next.push({ peer, activity, unread })
+          const [activity, inbox] = await Promise.all([activityOf(peer), inboxOf(peer.id)])
+          next.push({ peer, activity, unread: inbox.unread })
+          arrivals.push({ peer, latest: inbox.unread ? inbox.latest : 0 })
         }
         setRows(next)
         refreshMemory()
+        if (selfSessionID) {
+          for (const arrival of arrivals) announce(arrival.peer, arrival.latest)
+          // Only now is the position known: a later arrival is real news.
+          armed = true
+        }
       } catch {
         // Keep the last known list: the sidebar must never break the TUI.
       }

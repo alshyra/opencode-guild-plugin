@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 
 import { renderMemoryBlock, renderPeerBlock } from "../src/inject.ts"
-import { MAX_TOPICS, topicsOf, type MemoryEntry } from "../src/memory.ts"
+import { MAX_TAG_CHARS, MAX_TOPICS, normalizeTags, topicsOf, type MemoryEntry } from "../src/memory.ts"
 import type { Peer } from "../src/peers.ts"
 
 const DAY = 86_400_000
@@ -56,6 +56,31 @@ describe("topicsOf", () => {
 
   test("is empty when no entry carries a tag", () => {
     expect(topicsOf([entry(), entry()])).toEqual([])
+  })
+
+  test("truncates an over-long tag coming from an older file", () => {
+    const topics = topicsOf([entry({ tags: ["y".repeat(500)] })])
+    expect(topics[0]?.[0]).toHaveLength(MAX_TAG_CHARS)
+  })
+})
+
+describe("normalizeTags", () => {
+  test("trims, collapses spaces, drops blanks and duplicates", () => {
+    expect(normalizeTags(["  a b  ", "A B", "", "   ", 42, "c"])).toEqual(["a b", "c"])
+  })
+
+  test("caps the tag length so the injected index stays bounded", () => {
+    const [tag] = normalizeTags(["x".repeat(500)])
+    expect(tag).toHaveLength(MAX_TAG_CHARS)
+  })
+
+  test("caps the count", () => {
+    expect(normalizeTags(Array.from({ length: 20 }, (_, index) => `t${index}`), 3)).toHaveLength(3)
+  })
+
+  test("tolerates a non-array", () => {
+    expect(normalizeTags(undefined)).toEqual([])
+    expect(normalizeTags("nope")).toEqual([])
   })
 })
 

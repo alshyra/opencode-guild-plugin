@@ -1,7 +1,7 @@
 import type { Ctx } from "./types"
 import type { MemoryEntry, MemoryStore } from "./memory"
 import type { SessionBusOptions } from "./options"
-import { MAX_TAGS, dateOf } from "./memory"
+import { MAX_TAGS, dateOf, normalizeTags } from "./memory"
 import { log, warn } from "./log"
 
 /** One entry the model proposes to keep after a consolidation. */
@@ -218,13 +218,7 @@ function toDigest(item: unknown, options: ParseOptions): DigestEntry | undefined
   const text = typeof raw["text"] === "string" ? raw["text"].replace(/\s+/g, " ").trim() : ""
   // A truncated command is worse than a missing one: too long means unusable.
   if (!text || text.length > options.maxTextChars) return undefined
-  const tags = Array.isArray(raw["tags"])
-    ? raw["tags"]
-        .filter((tag): tag is string => typeof tag === "string")
-        .map((tag) => tag.trim())
-        .filter(Boolean)
-        .slice(0, options.maxTags)
-    : []
+  const tags = normalizeTags(raw["tags"], options.maxTags)
   const key = typeof raw["key"] === "string" ? raw["key"].trim() : ""
   const usable = key && key.length <= MAX_KEY_CHARS && key !== "optional" ? key : undefined
   return { text, tags, ...(usable ? { key: usable } : {}) }

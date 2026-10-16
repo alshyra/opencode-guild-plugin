@@ -23,6 +23,15 @@ export interface DelegationInput {
 }
 
 /**
+ * A message that delegates work (a handoff that asks for an answer) is a
+ * request, not a report: it must not resolve a delegation the same two sessions
+ * already had going the other way. Only a note or an answer is a report.
+ */
+export function isDelegationRequest(kind: string, expectReply: boolean): boolean {
+  return kind === "handoff" && expectReply
+}
+
+/**
  * Outstanding asynchronous delegations. The report back is an ordinary peer
  * message; this registry only remembers the exchange, so a session can see what
  * it is still waiting for and the plugin can tell a report from a stray message.
@@ -52,15 +61,30 @@ export class Delegations {
   }
 
   /** The oldest unanswered delegation between these two sessions, now marked answered. */
-  resolve(requester: string, peer: string, now = Date.now()): Delegation | undefined {
+  resolvePair(requester: string, peer: string, now = Date.now()): Delegation | undefined {
     let oldest: Delegation | undefined
     for (const delegation of this.#all.values()) {
       if (delegation.requester !== requester || delegation.peer !== peer || delegation.resolvedAt) continue
       if (!oldest || delegation.at < oldest.at) oldest = delegation
     }
     if (!oldest) return undefined
-    const resolved: Delegation = { ...oldest, resolvedAt: now }
-    this.#all.set(oldest.id, resolved)
+    return this.#mark(oldest, now)
+  }
+
+  /**
+   * The delegation a report names explicitly (`reply_to`). This is the reliable
+   * path: the pair fallback cannot tell two exchanges between the same two
+   * sessions apart, nor a report from an unrelated note.
+   */
+  resolveById(id: string, now = Date.now()): Delegation | undefined {
+    const delegation = this.#all.get(id)
+    if (!delegation || delegation.resolvedAt) return undefined
+    return this.#mark(delegation, now)
+  }
+
+  #mark(delegation: Delegation, now: number): Delegation {
+    const resolved: Delegation = { ...delegation, resolvedAt: now }
+    this.#all.set(delegation.id, resolved)
     return resolved
   }
 

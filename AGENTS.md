@@ -46,10 +46,21 @@ Both entry files must stay at the repository root: the loader resolves a plugin 
   tool through `context.signal`, so the loop reads once more before giving up.
 - `peers_delegate` is the asynchronous counterpart, and the default for work that can run in parallel: it
   delivers, registers a `Delegations` entry and returns at once. The wake-up is not a polling loop — every
-  delivery already goes out with `resume: true`, so the peer's report resumes the requester. `deliver()`
-  resolves the matching delegation when the asked peer writes back (direction: `resolve(receiver, sender)`),
-  and `peers_delegate` registers *before* delivering so a fast report cannot race an empty registry. The
-  registry is in memory only and bounded: losing it costs visibility, never a delivery.
+  delivery already goes out with `resume: true`, so the peer's report resumes the requester.
+- A delegation is resolved **by id**, not by pair: the delivered request carries `delegation: dlg_…` in its
+  metadata and the guidance tells the peer to send `reply_to` back; `deliver()` calls `resolveById` on it. The
+  pair match (`resolvePair`) is only a fallback for a report that quotes nothing, and it is skipped when the
+  message is itself a delegation request (`isDelegationRequest`) — otherwise a request coming the other way
+  would close the pair's open exchange. `peers_delegate` registers *before* delivering so a fast report cannot
+  race an empty registry.
+- The `Delegations` registry is per plugin instance, i.e. per location. With the default `scope: "directory"`
+  the two sessions share it; with `scope: "project"` they live in different checkouts, hence different
+  instances, so the reply resolves nothing and the delegation stays listed. It is in memory only and bounded:
+  losing it costs visibility, never a delivery.
+- The wake is best effort, and it is a *model* wake, not a user one. `assertRate`, the hop cap and a denied
+  permission can make the peer's `deliver` throw before any synthetic is written: the report then never
+  arrives, and only the peer sees the error. The TUI half is what turns an incoming peer message into
+  something the human notices (`context.attention.notify`); without it a resumed turn can pass unseen.
 - Peer discovery is project-scoped at the API level and folder-filtered in `selectPeers`; `scope: "project"`
   widens it to every checkout of the project.
 - OpenCode's default permission policy allows everything, so `permission: "ask"` only prompts when a

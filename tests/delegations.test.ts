@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 
-import { Delegations } from "../src/delegations.ts"
+import { Delegations, isDelegationRequest } from "../src/delegations.ts"
+import { renderPeerMessage, type PeerMessageMeta } from "../src/envelope.ts"
 
 const R = "ses_request"
 const P = "ses_peer"
@@ -17,7 +18,7 @@ describe("Delegations", () => {
   test("a report from the asked peer resolves the delegation", () => {
     const delegations = new Delegations()
     const delegation = delegations.register({ requester: R, peer: P, task: "check the logs" })
-    const resolved = delegations.resolve(R, P)
+    const resolved = delegations.resolvePair(R, P)
     expect(resolved?.id).toBe(delegation.id)
     expect(delegations.get(delegation.id)?.resolvedAt).toBeGreaterThan(0)
     expect(delegations.pending(R)).toEqual([])
@@ -26,8 +27,8 @@ describe("Delegations", () => {
   test("resolving is directional: the wrong direction or a stray peer finds nothing", () => {
     const delegations = new Delegations()
     delegations.register({ requester: R, peer: P, task: "x" })
-    expect(delegations.resolve(P, R)).toBeUndefined()
-    expect(delegations.resolve(R, "ses_other")).toBeUndefined()
+    expect(delegations.resolvePair(P, R)).toBeUndefined()
+    expect(delegations.resolvePair(R, "ses_other")).toBeUndefined()
     expect(delegations.pending(R)).toHaveLength(1)
   })
 
@@ -35,10 +36,10 @@ describe("Delegations", () => {
     const delegations = new Delegations()
     const first = delegations.register({ requester: R, peer: P, task: "first", now: 1_000 })
     const second = delegations.register({ requester: R, peer: P, task: "second", now: 2_000 })
-    expect(delegations.resolve(R, P)?.id).toBe(first.id)
+    expect(delegations.resolvePair(R, P)?.id).toBe(first.id)
     expect(delegations.pending(R).map((item) => item.id)).toEqual([second.id])
-    expect(delegations.resolve(R, P)?.id).toBe(second.id)
-    expect(delegations.resolve(R, P)).toBeUndefined()
+    expect(delegations.resolvePair(R, P)?.id).toBe(second.id)
+    expect(delegations.resolvePair(R, P)).toBeUndefined()
   })
 
   test("pending is scoped to the requester and ordered oldest first", () => {
@@ -57,6 +58,25 @@ describe("Delegations", () => {
     expect(delegations.pending(R)).toEqual([])
   })
 
+  test("resolveById closes exactly the named delegation, not the pair's oldest", () => {
+    const delegations = new Delegations()
+    const first = delegations.register({ requester: R, peer: P, task: "first", now: 1_000 })
+    const second = delegations.register({ requester: R, peer: P, task: "second", now: 2_000 })
+    expect(delegations.resolveById(second.id)?.id).toBe(second.id)
+    expect(delegations.pending(R).map((item) => item.id)).toEqual([first.id])
+    // An unknown or already-resolved id resolves nothing.
+    expect(delegations.resolveById(second.id)).toBeUndefined()
+    expect(delegations.resolveById("dlg_nope")).toBeUndefined()
+  })
+
+  test("isDelegationRequest tells a request from a report", () => {
+    expect(isDelegationRequest("handoff", true)).toBe(true)
+    expect(isDelegationRequest("handoff", false)).toBe(false)
+    expect(isDelegationRequest("note", false)).toBe(false)
+    expect(isDelegationRequest("note", true)).toBe(false)
+    expect(isDelegationRequest("question", true)).toBe(false)
+  })
+
   test("stays bounded: never-answered delegations cannot grow the map forever", () => {
     const delegations = new Delegations()
     for (let index = 0; index < 300; index += 1) {
@@ -65,5 +85,29 @@ describe("Delegations", () => {
     // KEEP is 200; the trim keeps the newest.
     expect(delegations.pending(R).length).toBeLessThanOrEqual(200)
     expect(delegations.pending(R)[0]?.task).toBe("task 100")
+  })
+})
+
+describe("delegation envelope", () => {
+  const base: PeerMessageMeta = {
+    bus: "session-bus",
+    v: 1,
+    from: "ses_peer",
+    fromTitle: "peer",
+    fromDirectory: "/tmp",
+    kind: "handoff",
+    hop: 0,
+    ts: 0,
+  }
+
+  test("a delegation request tells the peer to quote the id back", () => {
+    const text = renderPeerMessage({ ...base, delegation: "dlg_abc" }, "do the thing", true)
+    expect(text).toContain('reply_to: "dlg_abc"')
+    expect(text).toContain("match your report to this exact task")
+  })
+
+  test("a plain message carries no reply_to", () => {
+    const text = renderPeerMessage(base, "just a note", false)
+    expect(text).not.toContain("reply_to")
   })
 })
