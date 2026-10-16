@@ -382,10 +382,10 @@ describe("renderPeerMessage", () => {
     expect(lines.at(-2)).toBe("")
   })
 
-  test("a handoff asks to be reported once done or blocked", () => {
-    const text = renderPeerMessage(meta({ kind: "handoff", fromTitle: "Session B" }), "Prends ce chantier.", false)
-    expect(text).toContain(`${MARKER} handoff from "Session B"`)
-    expect(text).toContain("handing you this work item")
+  test("a delegation asks to be reported once done or blocked", () => {
+    const text = renderPeerMessage(meta({ kind: "delegate", fromTitle: "Session B" }), "Prends ce chantier.", false)
+    expect(text).toContain(`${MARKER} delegation from "Session B"`)
+    expect(text).toContain("delegating this work item to you")
     expect(text).toContain("report to your own user")
     expect(text).toContain("Send one short line back with peers_send when it is done or blocked")
   })
@@ -417,7 +417,7 @@ describe("isPeerMessage / stripPeerEnvelope", () => {
   test("round-trips the body", () => {
     expect(stripPeerEnvelope(renderPeerMessage(meta(), body, false))).toBe(body)
     expect(stripPeerEnvelope(renderPeerMessage(meta({ kind: "question" }), body, false))).toBe(body)
-    expect(stripPeerEnvelope(renderPeerMessage(meta({ kind: "handoff" }), body, false))).toBe(body)
+    expect(stripPeerEnvelope(renderPeerMessage(meta({ kind: "delegate" }), body, false))).toBe(body)
   })
 
   test("leaves a plain message untouched", () => {

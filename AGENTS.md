@@ -19,7 +19,7 @@ Both entry files must stay at the repository root: the loader resolves a plugin 
 - `src/peers.ts` — pure peer types, selection and formatting, shared by the server and the TUI half.
 - `src/delegations.ts` — the outstanding asynchronous delegations: register, resolve on the peer's report, list.
 - `src/registry.ts` — session discovery (`/api/session`, `/api/session/active`) with a short TTL cache.
-- `src/tools.ts` — the twelve tools: target resolution, permission assert, rate limit, hop counter, ask loop.
+- `src/tools.ts` — the eleven tools: target resolution, permission assert, rate limit, hop counter, ask loop.
 - `src/memory.ts` — the folder's long-term memory: file layout, JSONL parsing, atomic replace, archives, cap.
 - `src/compress.ts` — the consolidation: prompt, tolerant JSON reader, `ctx.generate.text` call and report.
 - `src/activity.ts` — the `peers_activity` report (transcript, tools, session diff, working copy).
@@ -130,8 +130,9 @@ running service, as below.
    The TUI half itself only loads at TUI startup.
 3. With `debug: true`, `~/.local/state/opencode/session-bus.log` shows load, tool list, injections and deliveries.
 4. Two sessions in the same folder: `peers_list` sees the other one, `peers_send` lands as a `synthetic`
-   message in the target session, `peers_ask` returns the peer's answer, `peers_handoff` shows up as a
-   handoff, `peers_activity` reports the peer's transcript and directory state.
+   message in the target session, `peers_ask` returns the peer's answer, `peers_delegate` shows up as a
+   delegation and its report wakes the requester, `peers_activity` reports the peer's transcript and
+   directory state.
 5. Memory: `memory_write` in one session shows up in `memory_read` and in the injected block of the next
    session of the same folder; a `key` write replaces, `memory_forget` drops, and
    `~/.opencode/session-bus/<sha1 of the folder>/memory.jsonl` holds exactly the surviving entries.

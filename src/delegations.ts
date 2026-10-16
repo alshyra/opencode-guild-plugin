@@ -23,12 +23,12 @@ export interface DelegationInput {
 }
 
 /**
- * A message that delegates work (a handoff that asks for an answer) is a
- * request, not a report: it must not resolve a delegation the same two sessions
- * already had going the other way. Only a note or an answer is a report.
+ * A delegation message is a request, not a report: it must not resolve a
+ * delegation the same two sessions already had going the other way. Only a note
+ * or an answer is a report.
  */
-export function isDelegationRequest(kind: string, expectReply: boolean): boolean {
-  return kind === "handoff" && expectReply
+export function isDelegationRequest(kind: string): boolean {
+  return kind === "delegate"
 }
 
 /**

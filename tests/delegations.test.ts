@@ -69,12 +69,10 @@ describe("Delegations", () => {
     expect(delegations.resolveById("dlg_nope")).toBeUndefined()
   })
 
-  test("isDelegationRequest tells a request from a report", () => {
-    expect(isDelegationRequest("handoff", true)).toBe(true)
-    expect(isDelegationRequest("handoff", false)).toBe(false)
-    expect(isDelegationRequest("note", false)).toBe(false)
-    expect(isDelegationRequest("note", true)).toBe(false)
-    expect(isDelegationRequest("question", true)).toBe(false)
+  test("isDelegationRequest tells a delegation request from a report", () => {
+    expect(isDelegationRequest("delegate")).toBe(true)
+    expect(isDelegationRequest("note")).toBe(false)
+    expect(isDelegationRequest("question")).toBe(false)
   })
 
   test("stays bounded: never-answered delegations cannot grow the map forever", () => {
@@ -95,7 +93,7 @@ describe("delegation envelope", () => {
     from: "ses_peer",
     fromTitle: "peer",
     fromDirectory: "/tmp",
-    kind: "handoff",
+    kind: "delegate",
     hop: 0,
     ts: 0,
   }

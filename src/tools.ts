@@ -47,12 +47,6 @@ interface AskInput {
   readonly timeout_seconds?: number
 }
 
-interface HandoffInput {
-  readonly target?: string
-  readonly task?: string
-  readonly context?: string
-}
-
 interface ActivityInput {
   readonly target?: string
   readonly messages?: number
@@ -106,7 +100,7 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
       name: "peers_list",
       description:
         "List the other OpenCode sessions working in the same folder (same project and same checkout). " +
-        "Use it when the user asks what another session is doing, and before peers_send, peers_ask or peers_handoff.",
+        "Use it when the user asks what another session is doing, and before peers_send, peers_ask or peers_delegate.",
       input: {
         type: "object",
         properties: {
@@ -132,7 +126,7 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
           content: [
             `${peers.length} other session(s) here:`,
             ...lines,
-            `Message one with peers_send(target="1", message="..."), ask one with peers_ask, or hand work over with peers_handoff.`,
+            `Message one with peers_send(target="1", message="..."), ask one with peers_ask, or delegate work with peers_delegate.`,
           ].join("\n"),
           metadata: {
             peers: peers.map((peer, index) => ({
@@ -272,55 +266,6 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
     })
 
     editor.add({
-      name: "peers_handoff",
-      description:
-        "Hand a work item over to another session of the same folder: a task to take on, a branch to continue, a file to finish. " +
-        "The peer receives it as a task statement, explicitly attributed to your user. Use it when the user says to give work to " +
-        "another session ('prends ca', 'passe le relais').",
-      input: {
-        type: "object",
-        properties: {
-          target: TARGET_PROPERTY,
-          task: {
-            type: "string",
-            description: "What the peer must take on, phrased as an instruction. Be specific and self-contained.",
-          },
-          context: {
-            type: "string",
-            description: "Optional: current state, files, decisions or blockers the peer needs before starting.",
-          },
-        },
-        required: ["target", "task"],
-        additionalProperties: false,
-      },
-      execute: async (raw, context) => {
-        const input = (raw ?? {}) as HandoffInput
-        const task = String(input.task ?? "").trim()
-        const invalid = validateBody(deps, task)
-        if (invalid) return { content: invalid }
-        const peer = await resolveInputPeer(deps, context, input.target)
-        if (typeof peer === "string") return { content: peer }
-        const contextNote = String(input.context ?? "").trim()
-        const body = contextNote ? `${task}\n\nContext from my side:\n${contextNote}` : task
-        try {
-          const result = await deliver(deps, {
-            caller: callerOf(context),
-            peer,
-            body,
-            kind: "handoff",
-            expectReply: false,
-          })
-          return {
-            content: `Handed over to ${peer.handle} "${peer.title}" (${deliveryLabel(peer, result.delivery)}). It was told to treat this as a task from your user.`,
-            metadata: { to: peer.id, delivery: result.delivery, hop: result.hop },
-          }
-        } catch (cause) {
-          return { content: errorText(cause) }
-        }
-      },
-    })
-
-    editor.add({
       name: "peers_activity",
       description:
         "Inspect what another session of the same folder is doing: its recent conversation, the tools it ran, the files its last " +
@@ -356,9 +301,9 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
       name: "peers_delegate",
       description:
         "Delegate a task to another session of the same folder and keep working: this is the asynchronous counterpart of peers_ask. " +
-        "The task is delivered now, this call returns immediately, and the peer's report wakes you when it comes back. Use it for work " +
-        "that can run in parallel with yours. Use peers_handoff when you do not need to hear back, and peers_ask when you cannot continue " +
-        "without the answer right now.",
+        "The task is delivered now, this call returns immediately, the peer is told to treat it as a task from your user, and its " +
+        "report wakes you when it comes back. Use it to hand off work ('prends ca', 'passe le relais') and use peers_ask only when " +
+        "you cannot continue without the answer right now.",
       input: {
         type: "object",
         properties: {
@@ -396,7 +341,7 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
             caller: callerOf(context),
             peer,
             body,
-            kind: "handoff",
+            kind: "delegate",
             expectReply: true,
             delegation: delegation.id,
           })
@@ -908,7 +853,7 @@ async function deliver(deps: Deps, input: DeliverInput): Promise<{ delivery: str
   // requester, so the wake-up and the bookkeeping happen together.
   const answered = input.replyTo
     ? deps.delegations.resolveById(input.replyTo)
-    : isDelegationRequest(input.kind, input.expectReply)
+    : isDelegationRequest(input.kind)
       ? undefined
       : deps.delegations.resolvePair(input.peer.id, input.caller.sessionID)
   if (answered) log(`delegation ${answered.id} answered by ${input.caller.sessionID}`)

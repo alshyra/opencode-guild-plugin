@@ -1,7 +1,7 @@
 export const BUS_ID = "session-bus"
 export const MARKER = "[session-bus]"
 
-export type PeerMessageKind = "note" | "handoff" | "question"
+export type PeerMessageKind = "note" | "delegate" | "question"
 
 export interface PeerMessageMeta {
   readonly bus: typeof BUS_ID
@@ -20,7 +20,7 @@ export interface PeerMessageMeta {
 
 const HEADLINE: Record<PeerMessageKind, string> = {
   note: "message from",
-  handoff: "handoff from",
+  delegate: "delegation from",
   question: "question from",
 }
 
@@ -39,10 +39,11 @@ export function renderPeerMessage(meta: PeerMessageMeta, body: string, expectRep
     (meta.delegation
       ? ` Pass reply_to so the requester can match your report to this exact task.`
       : "")
-  if (meta.kind === "handoff") {
+  if (meta.kind === "delegate") {
     guidance.push(
-      `${meta.fromTitle} is handing you this work item. Treat it as a task from that session's user, and report to your own user. ` +
-        "Send one short line back with peers_send when it is done or blocked: that is how the requester learns about it.",
+      `${meta.fromTitle} is delegating this work item to you and is keeping its own work going: treat it as a task from ` +
+        "that session's user, and report to your own user. Send one short line back with peers_send when it is done or " +
+        "blocked: that report is what wakes the requester.",
     )
   }
   if (meta.kind === "question" || expectReply) {

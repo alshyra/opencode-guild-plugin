@@ -26,6 +26,12 @@ const STORE_KEY = "session-bus"
 const SEEN_KEY = "session-bus.seen"
 /** Last peer message already announced to the human, so one arrival notifies once. */
 const NOTIFIED_KEY = "session-bus.notified"
+/**
+ * Skip reasons that only mean "nothing was shown because of the focus state":
+ * the arrival is not recorded as announced, so the next refresh tries again and
+ * the report lands as soon as the terminal goes to the background.
+ */
+const FOCUS_SKIPS: ReadonlySet<string> = new Set(["focused", "blurred", "focus_unknown"])
 
 interface Row {
   readonly peer: Peer
@@ -67,9 +73,12 @@ export default Plugin.define({
     const directory = context.location?.directory
     const cleanups: Array<() => void> = []
     const activityCache = new Map<string, { at: number; value?: string }>()
+    /** Peers whose notification is in flight: two overlapping refreshes must not both announce. */
+    const announcing = new Set<string>()
     let selfSessionID: string | undefined
 
     const markSeen = (peerID: string) => updateSeen((draft) => void (draft[peerID] = Date.now()))
+    const markNotified = (peerID: string, at: number) => updateNotified((draft) => void (draft[peerID] = at))
 
     const toggle = () => void updateUi((draft) => void (draft.expanded = !draft.expanded))
     const toggleMemory = () => void updateUi((draft) => void (draft.memoryExpanded = !draft.memoryExpanded))
@@ -158,25 +167,45 @@ export default Plugin.define({
      * Tell the human a peer wrote, once per arrival and never on the first pass:
      * a peer report that lands while the terminal is in the background is
      * exactly what goes unnoticed. Cheap by construction — it reuses the inbox
-     * read the sidebar already does, and `attention.notify` skips itself when
-     * the terminal is focused.
+     * read the sidebar already does.
+     *
+     * `notification: true` fires only when the terminal is *not* focused (the
+     * host reads it as `when: "blurred"`), so a focused terminal skips it. That
+     * case is not recorded as announced: the next refresh tries again, and the
+     * report lands as soon as the terminal goes to the background.
      */
-    const announce = (peer: Peer, latest: number): void => {
+    const announce = async (peer: Peer, latest: number): Promise<void> => {
       if (latest <= 0 || latest <= (notified[peer.id] ?? 0) || latest <= (seen[peer.id] ?? 0)) return
-      updateNotified((draft) => void (draft[peer.id] = latest))
-      if (!armed) return
+      if (announcing.has(peer.id)) return
+      if (!armed) {
+        // First pass, or an inbox that could not be read yet: remember where the
+        // conversation stood instead of announcing what was already there.
+        markNotified(peer.id, latest)
+        return
+      }
       const current = context.ui.router.current()
-      if (current.type === "session" && current.sessionID === peer.id) return
+      if (current.type === "session" && current.sessionID === peer.id) {
+        // The human is on that peer's tab: the message is right in front of them.
+        markNotified(peer.id, latest)
+        return
+      }
+      announcing.add(peer.id)
       try {
-        context.attention
+        const result = await context.attention
           .notify({
             title: "Session bus",
             message: `${peer.handle} "${short(peer.title, 40)}" wrote to you`,
             notification: true,
           })
           .catch(() => undefined)
+        if (result?.skipped && FOCUS_SKIPS.has(result.skipped)) return
+        markNotified(peer.id, latest)
       } catch {
-        // A notification must never break the sidebar.
+        // A notification must never break the sidebar. A hard failure is not a
+        // focus skip: treat it as announced instead of retrying forever.
+        markNotified(peer.id, latest)
+      } finally {
+        announcing.delete(peer.id)
       }
     }
 
@@ -214,7 +243,7 @@ export default Plugin.define({
         setRows(next)
         refreshMemory()
         if (selfSessionID) {
-          for (const arrival of arrivals) announce(arrival.peer, arrival.latest)
+          for (const arrival of arrivals) void announce(arrival.peer, arrival.latest)
           // Only now is the position known: a later arrival is real news.
           armed = true
         }
