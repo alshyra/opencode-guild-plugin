@@ -1,9 +1,20 @@
 import { createHash, randomBytes } from "node:crypto"
-import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import {
+  appendFileSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 
-import { truncate, warn } from "./log"
+import { log, truncate, warn } from "./log"
+
+/** How many pre-rewrite snapshots stay in `history/`. */
+const ARCHIVE_KEEP = 5
 
 /** One durable fact, decision or convention recorded by a session. */
 export interface MemoryEntry {
@@ -18,6 +29,8 @@ export interface MemoryEntry {
   readonly key?: string
   /** Pinned entries survive the cap and come first in the injected block. */
   readonly pinned: boolean
+  /** Ids this entry came out of: a consolidation trail, not a strict parent link. */
+  readonly mergedFrom?: readonly string[]
 }
 
 export interface MemoryInput {
@@ -51,8 +64,39 @@ export interface MemoryWriteResult {
 }
 
 export type MemoryForgetResult =
-  | { readonly removed: readonly MemoryEntry[] }
+  | { readonly removed: readonly MemoryEntry[]; readonly archive?: string }
   | { readonly error: string }
+
+/** One entry to add during a rewrite: the store fills identity, dates and ids. */
+export interface MemoryDigest {
+  readonly text: string
+  readonly tags: readonly string[]
+  readonly key?: string
+}
+
+export interface MemoryReplaceInput {
+  /** Ids, keys or unambiguous text fragments of the entries to drop. */
+  readonly remove: readonly string[]
+  readonly add: readonly MemoryDigest[]
+  readonly session: string
+  readonly title: string
+  readonly agent?: string
+  /** Resolve and report without writing anything. */
+  readonly dryRun?: boolean
+}
+
+export type MemoryReplaceResult =
+  | {
+      readonly removed: readonly MemoryEntry[]
+      readonly added: readonly MemoryEntry[]
+      readonly total: number
+      /** Path of the archive taken before the rewrite. */
+      readonly archive?: string
+    }
+  | { readonly error: string }
+
+/** A memory entry is a line a colleague reads: a handful of labels is enough. */
+export const MAX_TAGS = 8
 
 /** Root of the per-folder memory: `~/.opencode/session-bus/<hash>/`. */
 export function memoryRoot(home: string = homedir()): string {
@@ -134,7 +178,8 @@ export class MemoryStore {
     const compacted = compact(kept, this.#options.maxEntries)
     const dropped = kept.length - compacted.length
 
-    this.#save(compacted, replaced !== undefined || dropped > 0 ? "rewrite" : "append", entry)
+    if (replaced !== undefined || dropped > 0) this.#rewrite(compacted)
+    else this.#append(entry)
     this.#entries = compacted
     this.#at = Date.now()
     this.#loaded = true
@@ -150,18 +195,7 @@ export class MemoryStore {
   forget(target: string): MemoryForgetResult {
     const wanted = target.trim()
     const entries = this.#read()
-    // Precedence: id, then key, then a fragment of the text. A fragment only
-    // wins when nothing identifies the entry directly, so that a short text
-    // never hides an exact id or key.
-    const byID = entries.filter(
-      (entry) => entry.id === wanted || (/^mem_/.test(wanted) && entry.id.startsWith(wanted)),
-    )
-    const byKey = entries.filter((entry) => entry.key === wanted)
-    const direct = byID.length > 0 ? byID : byKey
-    const matches =
-      direct.length > 0
-        ? direct
-        : entries.filter((entry) => normalize(entry.text).includes(normalize(wanted)))
+    const matches = matchEntries(entries, wanted)
     if (matches.length === 0) {
       return { error: `No memory entry matches "${wanted}" (use memory_read to get the ids).` }
     }
@@ -172,11 +206,63 @@ export class MemoryStore {
     }
     const removed = matches[0] as MemoryEntry
     const kept = entries.filter((entry) => entry.id !== removed.id)
-    this.#save(kept, "rewrite")
+    const archive = this.#rewrite(kept)
     this.#entries = kept
     this.#at = Date.now()
     this.#loaded = true
-    return { removed: [removed] }
+    log(`forgot memory entry ${removed.id} (${kept.length} left)`)
+    return { removed: [removed], archive }
+  }
+
+  /**
+   * Drops the entries matching `remove` and adds the digests in one write: the
+   * primitive behind `memory_rewrite` and the compression. Nothing is written
+   * when a target does not resolve: the caller gets the list and can retry.
+   */
+  replace(input: MemoryReplaceInput): MemoryReplaceResult {
+    const entries = this.#read()
+    const removed: MemoryEntry[] = []
+    const unknown: string[] = []
+    for (const target of input.remove) {
+      const matches = matchEntries(entries, target.trim())
+      if (matches.length !== 1) {
+        unknown.push(matches.length === 0 ? target : `${target} (${matches.length} matches)`)
+        continue
+      }
+      const entry = matches[0] as MemoryEntry
+      if (!removed.includes(entry)) removed.push(entry)
+    }
+    if (unknown.length > 0) {
+      return {
+        error: `Nothing was rewritten: no single entry matches ${unknown.map((item) => `"${item}"`).join(", ")}. Read the ids with memory_read first.`,
+      }
+    }
+
+    const replacedAt = Date.now()
+    const added: MemoryEntry[] = input.add.map((digest) => ({
+      id: newID(),
+      at: replacedAt,
+      session: input.session,
+      title: input.title,
+      ...(input.agent ? { agent: input.agent } : {}),
+      text: digest.text.trim(),
+      tags: digest.tags,
+      ...(digest.key ? { key: digest.key } : {}),
+      pinned: false,
+      ...(removed.length > 0 ? { mergedFrom: removed.map((entry) => entry.id) } : {}),
+    }))
+
+    const gone = new Set(removed.map((entry) => entry.id))
+    const next = compact([...entries.filter((entry) => !gone.has(entry.id)), ...added], this.#options.maxEntries)
+    if (input.dryRun) {
+      return { removed, added, total: next.length }
+    }
+    const archive = this.#rewrite(next)
+    this.#entries = next
+    this.#at = Date.now()
+    this.#loaded = true
+    log(`rewrote memory: -${removed.length} +${added.length} entries (${next.length} total)`)
+    return { removed, added, total: next.length, ...(archive ? { archive } : {}) }
   }
 
   #read(): readonly MemoryEntry[] {
@@ -190,20 +276,58 @@ export class MemoryStore {
     return parseEntries(raw)
   }
 
-  #save(entries: readonly MemoryEntry[], mode: "append" | "rewrite", appended?: MemoryEntry): void {
+  #append(entry: MemoryEntry): void {
     try {
       mkdirSync(memoryDirectory(this.#directory), { recursive: true, mode: 0o700 })
-      if (mode === "append" && appended) {
-        appendFileSync(this.file, `${JSON.stringify(appended)}\n`, { mode: 0o600 })
-        return
-      }
+      appendFileSync(this.file, `${JSON.stringify(entry)}\n`, { mode: 0o600 })
+    } catch (cause) {
+      this.#report(cause)
+    }
+  }
+
+  /**
+   * Full rewrite, always preceded by an archive: a rewrite is the only thing
+   * that can lose an entry, so the previous file stays in `history/`.
+   */
+  #rewrite(entries: readonly MemoryEntry[]): string | undefined {
+    try {
+      mkdirSync(memoryDirectory(this.#directory), { recursive: true, mode: 0o700 })
+      const archive = this.#archive()
       const temporary = `${this.file}.tmp`
       const body = entries.map((entry) => JSON.stringify(entry)).join("\n")
       writeFileSync(temporary, body ? `${body}\n` : "", { mode: 0o600 })
       renameSync(temporary, this.file)
+      return archive
     } catch (cause) {
       this.#report(cause)
+      return undefined
     }
+  }
+
+  /** Copies the current file into `history/<timestamp>.jsonl`, keeping the last five. */
+  #archive(): string | undefined {
+    let body: string
+    try {
+      body = readFileSync(this.file, "utf8")
+    } catch (cause) {
+      if (!isMissing(cause)) this.#report(cause)
+      return undefined
+    }
+    if (!body.trim()) return undefined
+    const directory = join(memoryDirectory(this.#directory), "history")
+    mkdirSync(directory, { recursive: true, mode: 0o700 })
+    // Two rewrites can land in the same millisecond: the suffix keeps the
+    // generations distinct instead of overwriting one with the other.
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-")
+    const file = join(directory, `${stamp}-${randomBytes(3).toString("hex")}.jsonl`)
+    writeFileSync(file, body, { mode: 0o600 })
+    const stale = readdirSync(directory)
+      .filter((name) => name.endsWith(".jsonl"))
+      .sort()
+      .reverse()
+      .slice(ARCHIVE_KEEP)
+    for (const name of stale) unlinkSync(join(directory, name))
+    return file
   }
 
   #report(cause: unknown): void {
@@ -229,6 +353,24 @@ export function parseEntries(raw: string): readonly MemoryEntry[] {
     if (entry) entries.push(entry)
   }
   return entries.sort((left, right) => left.at - right.at)
+}
+
+/**
+ * Resolves entries from an id, an id prefix, a key or — only when nothing
+ * identifies the entry directly — a fragment of its text. Returns every
+ * candidate, so the caller can refuse an ambiguous target.
+ */
+export function matchEntries(entries: readonly MemoryEntry[], target: string): readonly MemoryEntry[] {
+  const wanted = target.trim()
+  if (!wanted) return []
+  const byID = entries.filter(
+    (entry) => entry.id === wanted || (/^mem_/.test(wanted) && entry.id.startsWith(wanted)),
+  )
+  if (byID.length > 0) return byID
+  const byKey = entries.filter((entry) => entry.key === wanted)
+  if (byKey.length > 0) return byKey
+  const needle = normalize(wanted)
+  return entries.filter((entry) => normalize(entry.text).includes(needle))
 }
 
 /** Pinned first, then the most recent. */
@@ -309,6 +451,9 @@ function toEntry(value: unknown): MemoryEntry | undefined {
     tags: Array.isArray(raw["tags"]) ? raw["tags"].filter((tag): tag is string => typeof tag === "string") : [],
     ...(typeof raw["key"] === "string" && raw["key"] ? { key: raw["key"] } : {}),
     pinned: raw["pinned"] === true,
+    ...(Array.isArray(raw["mergedFrom"])
+      ? { mergedFrom: raw["mergedFrom"].filter((id): id is string => typeof id === "string") }
+      : {}),
   }
 }
 

@@ -31,6 +31,8 @@ export interface SessionBusOptions {
   readonly memoryMaxEntries: number
   /** Longest text a single memory entry may hold. */
   readonly memoryMaxChars: number
+  /** Suggest a compression once the memory holds this many entries. 0 disables the nudge. */
+  readonly memoryCompressAfter: number
 }
 
 export const defaultOptions: SessionBusOptions = {
@@ -53,6 +55,7 @@ export const defaultOptions: SessionBusOptions = {
   memoryInjectLines: 5,
   memoryMaxEntries: 500,
   memoryMaxChars: 2000,
+  memoryCompressAfter: 60,
 }
 
 function pick<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
@@ -61,6 +64,11 @@ function pick<T extends string>(value: unknown, allowed: readonly T[], fallback:
 
 function positive(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback
+}
+
+/** Same as `positive`, but 0 is a meaningful value (it turns a feature off). */
+function nonNegative(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback
 }
 
 function boolean(value: unknown, fallback: boolean): boolean {
@@ -88,5 +96,6 @@ export function resolveOptions(raw: Readonly<Record<string, unknown>>): SessionB
     memoryInjectLines: positive(raw["memoryInjectLines"], defaultOptions.memoryInjectLines),
     memoryMaxEntries: positive(raw["memoryMaxEntries"], defaultOptions.memoryMaxEntries),
     memoryMaxChars: positive(raw["memoryMaxChars"], defaultOptions.memoryMaxChars),
+    memoryCompressAfter: nonNegative(raw["memoryCompressAfter"], defaultOptions.memoryCompressAfter),
   }
 }

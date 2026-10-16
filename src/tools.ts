@@ -7,7 +7,8 @@ import type { MemoryStore } from "./memory"
 import { type Peer, describePeer } from "./peers"
 import { BUS_ID, renderPeerMessage, stripPeerEnvelope, type PeerMessageKind, type PeerMessageMeta } from "./envelope"
 import { describeActivity } from "./activity"
-import { describeEntry, selectEntries, type MemoryEntry } from "./memory"
+import { MAX_TAGS, describeEntry, selectEntries, type MemoryDigest, type MemoryEntry } from "./memory"
+import { compressMemory, type CompressReport } from "./compress"
 import { log, truncate, warn } from "./log"
 
 export interface Deps {
@@ -71,14 +72,22 @@ interface MemoryForgetInput {
   readonly target?: string
 }
 
+interface MemoryRewriteInput {
+  readonly remove?: readonly string[]
+  readonly add?: readonly { readonly text?: string; readonly tags?: readonly string[]; readonly key?: string }[]
+  readonly dry_run?: boolean
+}
+
+interface MemoryCompressInput {
+  readonly dry_run?: boolean
+  readonly instructions?: string
+}
+
 const TARGET_PROPERTY = {
   type: "string",
   description:
     "The peer session: the number from peers_list, a session id (ses_...) or a unique session id prefix.",
 } as const
-
-/** A memory entry is a line a colleague reads: a handful of labels is enough. */
-const MAX_MEMORY_TAGS = 8
 
 export async function registerTools(ctx: Ctx, deps: Deps) {
   return ctx.tool.transform((editor) => {
@@ -373,7 +382,7 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
         const tags = (Array.isArray(input.tags) ? input.tags : [])
           .map((tag) => String(tag).trim())
           .filter(Boolean)
-          .slice(0, MAX_MEMORY_TAGS)
+          .slice(0, MAX_TAGS)
         try {
           const sender = await senderInfo(deps, context.sessionID)
           const result = deps.memory.write({
@@ -444,11 +453,18 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
         const filter = [input.query ? `query "${input.query}"` : "", tags.length ? `tags ${tags.join(", ")}` : ""]
           .filter(Boolean)
           .join(", ")
+        const compressHint =
+          deps.options.memoryCompressAfter > 0 && all.length >= deps.options.memoryCompressAfter
+            ? [
+                `The memory is large (${all.length} entries): memory_compress can merge the non-pinned ones into fewer, denser entries. The pinned entries are never touched and the previous file is archived first.`,
+              ]
+            : []
         return {
           content: [
             `Folder memory of ${where}: ${entries.length} of ${all.length} entries${filter ? ` (${filter})` : ""}, pinned first then most recent.`,
             ...entries.map((entry) => `- ${describeEntry(entry, 400)}`),
             "Record more with memory_write, drop a wrong entry with memory_forget(target=<id>).",
+            ...compressHint,
           ].join("\n"),
           metadata: { total: all.length, returned: entries.length, ids: entries.map((entry) => entry.id) },
         }
@@ -487,7 +503,163 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
         }
       },
     })
+
+    editor.add({
+      name: "memory_rewrite",
+      description:
+        "Replace several entries of the folder memory in one atomic write: drop the entries you name and add the consolidated " +
+        "ones. Use it to merge duplicates you found with memory_read, or to apply a consolidation you wrote yourself. Pinned " +
+        "entries are only dropped if you name them, and the previous file is archived before the write.",
+      input: {
+        type: "object",
+        properties: {
+          remove: {
+            type: "array",
+            items: { type: "string" },
+            description: "Entries to drop: ids (mem_...), keys, or unambiguous fragments of their text.",
+          },
+          add: {
+            type: "array",
+            description: "Entries to add, usually the merged replacements of the removed ones.",
+            items: {
+              type: "object",
+              properties: {
+                text: { type: "string", description: "The fact, short and self-contained." },
+                tags: { type: "array", items: { type: "string" }, description: "Optional labels." },
+                key: { type: "string", description: "Optional stable handle, as in memory_write." },
+              },
+              required: ["text"],
+              additionalProperties: false,
+            },
+          },
+          dry_run: { type: "boolean", description: "Report what would change without writing." },
+        },
+        additionalProperties: false,
+      },
+      execute: async (raw, context) => {
+        const input = (raw ?? {}) as MemoryRewriteInput
+        const remove = (Array.isArray(input.remove) ? input.remove : [])
+          .map((item) => String(item).trim())
+          .filter(Boolean)
+        const drafts = Array.isArray(input.add) ? input.add : []
+        if (remove.length === 0 && drafts.length === 0) {
+          return { content: "Nothing to do: give at least one entry to remove or to add." }
+        }
+        const digests: MemoryDigest[] = []
+        for (const draft of drafts) {
+          const text = String(draft?.text ?? "").trim()
+          if (!text) return { content: "Nothing was written: one of the entries to add has an empty text." }
+          if (text.length > deps.options.memoryMaxChars) {
+            return {
+              content: `Nothing was written: one of the entries is too long (${text.length} characters, limit ${deps.options.memoryMaxChars}).`,
+            }
+          }
+          const tags = (Array.isArray(draft?.tags) ? (draft.tags as readonly string[]) : [])
+            .map((tag) => String(tag).trim())
+            .filter(Boolean)
+            .slice(0, MAX_TAGS)
+          const key = typeof draft?.key === "string" && draft.key.trim() ? draft.key.trim() : undefined
+          digests.push({ text, tags, ...(key ? { key } : {}) })
+        }
+        const sender = await senderInfo(deps, context.sessionID)
+        const result = deps.memory.replace({
+          remove,
+          add: digests,
+          session: sender.id,
+          title: sender.title,
+          ...(context.agent ? { agent: context.agent } : {}),
+          ...(input.dry_run === true ? { dryRun: true } : {}),
+        })
+        if ("error" in result) return { content: result.error }
+        const dry = input.dry_run === true ? " (dry run, nothing written)" : ""
+        return {
+          content: [
+            `Folder memory of ${deps.ctx.location.directory}${dry}: ${result.removed.length} removed, ${result.added.length} added, ${result.total} entries in total.`,
+            ...result.removed.map((entry) => `  - removed ${entry.id}: ${truncate(entry.text, 100)}`),
+            ...result.added.map((entry) => `  + added ${entry.id}: ${truncate(entry.text, 100)}`),
+            result.archive ? `Previous file archived at ${result.archive}.` : "",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          metadata: { removed: result.removed.length, added: result.added.length, total: result.total },
+        }
+      },
+    })
+
+    editor.add({
+      name: "memory_compress",
+      description:
+        "Consolidate the folder memory: a model merges the duplicate and near-duplicate entries into fewer, denser ones. It is " +
+        "one auxiliary model call — nothing is added to this conversation and no session is created. Pinned entries are never " +
+        "touched and the previous file is archived first. Use it when the memory has grown and reads like a log rather than a " +
+        "reference; run it once with dry_run if you want to see the merge before applying it.",
+      input: {
+        type: "object",
+        properties: {
+          dry_run: { type: "boolean", description: "Report the before/after without writing anything." },
+          instructions: {
+            type: "string",
+            description: 'Optional extra instruction for the merge, for example "keep the absolute paths".',
+          },
+        },
+        additionalProperties: false,
+      },
+      execute: async (raw, context) => {
+        const input = (raw ?? {}) as MemoryCompressInput
+        try {
+          deps.guards.assertCompressAllowed(context.sessionID)
+        } catch (cause) {
+          return { content: errorText(cause) }
+        }
+        const sender = await senderInfo(deps, context.sessionID)
+        const report = await compressMemory(deps, {
+          caller: { sessionID: sender.id, title: sender.title, ...(context.agent ? { agent: context.agent } : {}) },
+          dryRun: input.dry_run === true,
+          ...(typeof input.instructions === "string" && input.instructions.trim()
+            ? { note: input.instructions.trim() }
+            : {}),
+        })
+        return {
+          content: describeCompression(deps, report),
+          metadata: {
+            applied: report.applied,
+            before: report.before,
+            after: report.after,
+            merged: report.removed.length,
+            skipped: report.skipped,
+          },
+        }
+      },
+    })
   })
+}
+
+function describeCompression(deps: Deps, report: CompressReport): string {
+  const where = deps.ctx.location.directory
+  if (report.problem) {
+    const problem = report.problem.replace(/\.$/, "")
+    const entries = `${report.before} ${report.before === 1 ? "entry" : "entries"}`
+    return `Nothing was written for ${where}: ${problem}. The memory still holds ${entries}.`
+  }
+  const head = report.applied
+    ? `Compressed the folder memory of ${where}: ${report.before} -> ${report.after} entries (${report.pool} non-pinned entries merged into ${report.entries.length}).`
+    : `Dry run for ${where}: ${report.before} -> ${report.after} entries (${report.pool} non-pinned entries sent). Nothing was written yet: call memory_compress again without dry_run to apply it.`
+  return [
+    head,
+    ...report.entries.slice(0, 20).map((entry) => `  - ${truncate(entry.text, 160)}`),
+    report.skipped > 0
+      ? `  (${report.skipped} returned ${report.skipped === 1 ? "entry was" : "entries were"} unusable and skipped)`
+      : "",
+    report.lostKeys.length > 0
+      ? `  (keys that no longer address any entry: ${report.lostKeys.join(", ")} — re-add them with memory_write(key=...) if they still matter)`
+      : "",
+    report.archive ? `Previous file archived at ${report.archive}.` : "",
+    report.applied
+      ? "Pinned entries were left untouched. The memory is injected in the next sessions of this folder."
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n")
 }
 
 interface DeliverInput {

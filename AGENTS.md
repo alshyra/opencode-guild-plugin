@@ -18,8 +18,9 @@ Both entry files must stay at the repository root: the loader resolves a plugin 
 - `src/api.ts` — minimal `GET` client over that endpoint.
 - `src/peers.ts` — pure peer types, selection and formatting, shared by the server and the TUI half.
 - `src/registry.ts` — session discovery (`/api/session`, `/api/session/active`) with a short TTL cache.
-- `src/tools.ts` — the eight tools: target resolution, permission assert, rate limit, hop counter, ask loop.
-- `src/memory.ts` — the folder's long-term memory: file layout, JSONL parsing, selection, cap.
+- `src/tools.ts` — the ten tools: target resolution, permission assert, rate limit, hop counter, ask loop.
+- `src/memory.ts` — the folder's long-term memory: file layout, JSONL parsing, atomic replace, archives, cap.
+- `src/compress.ts` — the consolidation: prompt, tolerant JSON reader, `ctx.generate.text` call and report.
 - `src/activity.ts` — the `peers_activity` report (transcript, tools, session diff, working copy).
 - `src/inject.ts` — `context` hook that appends the peer block and the memory block to the system prompt.
 - `src/envelope.ts` — the message a peer receives (header, kind, guidance) and its metadata contract.
@@ -60,6 +61,13 @@ Both entry files must stay at the repository root: the loader resolves a plugin 
   the same snapshot, cached for `cacheTtlSeconds`; `memory_write` and `memory_forget` always read from disk.
 - Nothing in this plugin may break a session, memory included: every file operation is wrapped and a failure
   only warns once, then the folder behaves as if it had no memory.
+- Compression never sees the pinned entries: the pool is filtered before the prompt, so an invariant holds by
+  construction rather than by comparison. The model call is `ctx.generate.text` (auxiliary request: no session
+  created, nothing added to the conversation), and the answer is only applied if it is valid JSON, usable and
+  *smaller* than the input. Unusable entries are skipped and counted, never truncated.
+- Every rewrite (key replaced, cap reached, `forget`, `replace`) archives the file in `history/` first, five
+  generations deep; the archive name carries a random suffix because two rewrites can land in the same
+  millisecond and would otherwise overwrite each other.
 
 ## Checks
 
@@ -82,5 +90,11 @@ There is no test suite: verify against a live service.
 5. Memory: `memory_write` in one session shows up in `memory_read` and in the injected block of the next
    session of the same folder; a `key` write replaces, `memory_forget` drops, and
    `~/.opencode/session-bus/<sha1 of the folder>/memory.jsonl` holds exactly the surviving entries.
-6. Test drivers used during development: `~/tmp/oc/bus-test*.py` and `~/tmp/oc/mem-live-test.py` (create
-   sessions, prompt them, auto-approve permission requests, dump transcripts).
+6. Compression: run `memory_compress` in a folder seeded with near-duplicates and two pinned entries; the
+   pinned ones must survive verbatim, `history/` must hold the byte-identical previous file, and a `dry_run`
+   must leave the file untouched. The refusal branches (model failure, invalid JSON, no gain, nothing to
+   merge) are covered by a stub context instead of a model call.
+7. Test drivers used during development: `~/tmp/oc/bus-test*.py` (peers), `~/tmp/oc/mem-live-test.py`
+   (memory), `~/tmp/oc/mem-compress-unit.ts` and `~/tmp/oc/mem-compress-refusals.ts` (pure functions and
+   compression branches, run with `HOME=<sandbox> bun run`), `~/tmp/oc/mem-compress-live.py` (live
+   compression, guarded by `--yes`).

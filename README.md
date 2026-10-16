@@ -16,9 +16,9 @@ hand work over and share a long-term memory of that folder — the OpenCode equi
   resumed when idle, so it actually reads it.
 - **Awareness** — a `context` hook appends the live peer list to the system prompt, so a session knows it is
   not alone before it opens its first tool call.
-- **Memory** — the same hook appends the folder's long-term memory (last entries, pinned first), and three
-  tools read and write it. Storage is a JSONL file outside the workspace, keyed by the folder
-  (see [Memory of the folder](#memory-of-the-folder)).
+- **Memory** — the same hook appends the folder's long-term memory (last entries, pinned first), and five
+  tools read, write, drop, rewrite and compress it. Storage is a JSONL file outside the workspace, keyed by
+  the folder (see [Memory of the folder](#memory-of-the-folder)).
 
 ## Install
 
@@ -67,6 +67,8 @@ the TUI picks up `tui.tsx` only at its own startup.
 | `memory_write(text, tags?, key?, pinned?)` | Record a durable fact, decision or convention in the folder's memory. |
 | `memory_read(query?, tags?, limit?)` | Search that memory by text or tag. |
 | `memory_forget(target)` | Drop an entry, by id, key or a unique text fragment. |
+| `memory_rewrite(remove?, add?, dry_run?)` | Drop several entries and add the consolidated ones in one atomic write. |
+| `memory_compress(dry_run?, instructions?)` | Merge the duplicate and near-duplicate entries with one model call (see [Compression](#compression)). |
 
 `target` accepts the number from `peers_list`, a session id, or a unique session id prefix. The tools are
 also reachable in Code Mode as `tools.peers_ask({...})`, `tools.peers_send({...})`, and so on. The plugin also
@@ -78,6 +80,10 @@ A message delivered to a *running* session is a steer: it waits in that session'
 step ends. `peers_ask` therefore polls the peer's own inbox (not only the transcript) to catch the answer
 while it is still blocking, and returns it inline. The answer also lands in the transcript afterwards, so it
 is visible in the TUI as well.
+
+A peer is expected to close the loop: answer a question, and after a request it was asked to carry out, send
+one short line back when the work is done or blocked. That report is what wakes the requester — `peers_ask`
+waits for a message, not for a status.
 
 ## Memory of the folder
 
@@ -92,13 +98,39 @@ otherwise rediscover — a contract that changed, a command that works, a choice
   entry survives the size cap and comes first in the injected block.
 - **Injection** — the `context` hook appends the first `memoryInjectLines` entries (pinned first, then most
   recent), truncated per entry. Nothing is injected while the memory is empty.
-- **Size** — past `memoryMaxEntries` the oldest unpinned entries are dropped, rewriting the file.
+- Size — past `memoryMaxEntries` the oldest unpinned entries are dropped, rewriting the file.
   `rm -rf ~/.opencode/session-bus/<hash>` forgets a folder entirely.
+- **History** — every rewrite (a key replaced, a `forget`, a rewrite, a compression) first archives the
+  previous file in `history/`, five generations deep. A bad merge or a wrong `forget` is recoverable by hand.
 - **Identity** — each entry keeps the session and title that wrote it, shown by `memory_read`.
 
 Memory or `peers_send`? Durable knowledge that outlives the current turn goes to memory; live coordination
 with a session that is running right now goes to `peers_send`. An entry that became false is worse than no
 entry: `memory_forget` it as soon as you notice.
+
+### Compression
+
+A memory that grows turns into a log. `memory_compress` consolidates it: the non-pinned entries go to the
+model in **one auxiliary request** (`ctx.generate.text`, the calling session's model), which merges the
+duplicates and near-duplicates into fewer, denser entries; the answer replaces them.
+
+- **Pinned entries never take part** — they are not even sent, so a compression cannot touch a standing rule.
+- **The previous file is archived** in `history/<timestamp>-<random>.jsonl` (five generations kept), so a bad
+  merge is always recoverable.
+- **Nothing is written on doubt**: the answer must be JSON with an `entries` array, invalid JSON or a result
+  that is not smaller than the input aborts the whole operation; entries the model returns unusable are
+  skipped and reported, never truncated.
+- **`dry_run: true`** reports the before/after and the merged texts without touching the file.
+- **Bounded**: at most three compressions per minute and per session, since each one costs a model call.
+- **Suggested, not imposed**: past `memoryCompressAfter` entries (default 60, `0` disables it), the injected
+  block and `memory_read` add one line inviting the session to compress.
+- **One pass at a time**: each compression rewrites the entries, so a second one right after the first keeps
+  eroding nuances. A compression is a lossy summary, not a lossless refactor — the archives and the untouched
+  pinned entries are the safety net.
+
+`memory_rewrite(remove, add, dry_run?)` is the same primitive exposed for a manual merge: drop several entries
+(by id, key or unambiguous text fragment) and add the consolidated ones in one atomic write, with the same
+archive guarantee.
 
 ## TUI
 
@@ -141,6 +173,7 @@ entry: `memory_forget` it as soon as you notice.
         "memoryInjectLines": 5,
         "memoryMaxEntries": 500,
         "memoryMaxChars": 2000,
+        "memoryCompressAfter": 60,
         "debug": false
       }
     }

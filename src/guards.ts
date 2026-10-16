@@ -18,6 +18,7 @@ interface Inbound {
 export class Guards {
   readonly #sent = new Map<string, number[]>()
   readonly #inbound = new Map<string, Inbound>()
+  readonly #compressions = new Map<string, number[]>()
 
   /** Number of peer hops this message would add to. */
   nextHop(sessionID: string, withinMs = 120_000): number {
@@ -42,5 +43,21 @@ export class Guards {
     }
     recent.push(now)
     this.#sent.set(sessionID, recent)
+  }
+
+  /**
+   * A compression is a model call, so a session cannot start them without
+   * bound: a loop would burn tokens for no gain.
+   */
+  assertCompressAllowed(sessionID: string, maxPerMinute = 3): void {
+    const now = Date.now()
+    const recent = (this.#compressions.get(sessionID) ?? []).filter((at) => now - at < 60_000)
+    if (recent.length >= maxPerMinute) {
+      throw new Error(
+        `already ${recent.length} memory compressions in the last minute in this session; report the result instead of compressing again.`,
+      )
+    }
+    recent.push(now)
+    this.#compressions.set(sessionID, recent)
   }
 }

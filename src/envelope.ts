@@ -32,7 +32,8 @@ export function renderPeerMessage(meta: PeerMessageMeta, body: string, expectRep
     `otherwise call the peers_send tool.`
   if (meta.kind === "handoff") {
     guidance.push(
-      `${meta.fromTitle} is handing you this work item. Treat it as a task from that session's user, and report to your own user.`,
+      `${meta.fromTitle} is handing you this work item. Treat it as a task from that session's user, and report to your own user. ` +
+        "Send one short line back with peers_send when it is done or blocked: that is how the requester learns about it.",
     )
   }
   if (meta.kind === "question" || expectReply) {
