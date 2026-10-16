@@ -3,10 +3,12 @@ import type { Guards } from "./guards"
 import type { SessionBusOptions } from "./options"
 import type { Api } from "./api"
 import type { Registry } from "./registry"
+import type { MemoryStore } from "./memory"
 import { type Peer, describePeer } from "./peers"
 import { BUS_ID, renderPeerMessage, stripPeerEnvelope, type PeerMessageKind, type PeerMessageMeta } from "./envelope"
 import { describeActivity } from "./activity"
-import { log, warn } from "./log"
+import { describeEntry, selectEntries, type MemoryEntry } from "./memory"
+import { log, truncate, warn } from "./log"
 
 export interface Deps {
   readonly ctx: Ctx
@@ -14,6 +16,7 @@ export interface Deps {
   readonly guards: Guards
   readonly options: SessionBusOptions
   readonly api: Api
+  readonly memory: MemoryStore
 }
 
 interface Caller {
@@ -51,11 +54,31 @@ interface ActivityInput {
   readonly messages?: number
 }
 
+interface MemoryWriteInput {
+  readonly text?: string
+  readonly tags?: readonly string[]
+  readonly key?: string
+  readonly pinned?: boolean
+}
+
+interface MemoryReadInput {
+  readonly query?: string
+  readonly tags?: readonly string[]
+  readonly limit?: number
+}
+
+interface MemoryForgetInput {
+  readonly target?: string
+}
+
 const TARGET_PROPERTY = {
   type: "string",
   description:
     "The peer session: the number from peers_list, a session id (ses_...) or a unique session id prefix.",
 } as const
+
+/** A memory entry is a line a colleague reads: a handful of labels is enough. */
+const MAX_MEMORY_TAGS = 8
 
 export async function registerTools(ctx: Ctx, deps: Deps) {
   return ctx.tool.transform((editor) => {
@@ -298,6 +321,169 @@ export async function registerTools(ctx: Ctx, deps: Deps) {
           return { content: report, metadata: { target: peer.id } }
         } catch (cause) {
           return { content: `Could not read ${peer.handle}'s activity: ${errorText(cause)}` }
+        }
+      },
+    })
+
+    if (!deps.options.memory) return
+
+    editor.add({
+      name: "memory_write",
+      description:
+        "Record a durable fact, decision or convention in the long-term memory of this folder. Every session working here " +
+        "reads it, now and later, so use it for what another session would otherwise have to rediscover: a contract you " +
+        "changed, a command or path that works, a choice the user made, a dead end. Write text you author yourself: never " +
+        "secrets, credentials, file contents or diffs.",
+      input: {
+        type: "object",
+        properties: {
+          text: {
+            type: "string",
+            description: "The fact, short and self-contained: one idea per entry, the way you would tell a colleague.",
+          },
+          tags: {
+            type: "array",
+            items: { type: "string" },
+            description: 'Optional labels to find it again, for example ["config", "k8s"].',
+          },
+          key: {
+            type: "string",
+            description:
+              "Optional stable handle for a fact that evolves (e.g. \"current-release\"): writing again with the same " +
+              "key replaces the previous entry instead of adding one.",
+          },
+          pinned: {
+            type: "boolean",
+            description:
+              "Keep this entry first in the injected block and protect it from the size cap. Reserve it for standing rules.",
+          },
+        },
+        required: ["text"],
+        additionalProperties: false,
+      },
+      execute: async (raw, context) => {
+        const input = (raw ?? {}) as MemoryWriteInput
+        const text = String(input.text ?? "").trim()
+        if (!text) return { content: "Nothing was recorded: the text is empty." }
+        if (text.length > deps.options.memoryMaxChars) {
+          return {
+            content: `Too long (${text.length} characters, limit ${deps.options.memoryMaxChars}). Keep one fact per entry and split the rest.`,
+          }
+        }
+        const tags = (Array.isArray(input.tags) ? input.tags : [])
+          .map((tag) => String(tag).trim())
+          .filter(Boolean)
+          .slice(0, MAX_MEMORY_TAGS)
+        try {
+          const sender = await senderInfo(deps, context.sessionID)
+          const result = deps.memory.write({
+            session: sender.id,
+            title: sender.title,
+            ...(context.agent ? { agent: context.agent } : {}),
+            text,
+            tags,
+            ...(typeof input.key === "string" && input.key.trim() ? { key: input.key.trim() } : {}),
+            pinned: input.pinned === true,
+          })
+          const where = deps.ctx.location.directory
+          if (result.duplicate) {
+            return {
+              content: `Already in the folder memory of ${where} as ${result.entry.id}: "${truncate(result.entry.text, 120)}". Nothing was added.`,
+              metadata: { id: result.entry.id, duplicate: true, total: result.total },
+            }
+          }
+          const replaced = result.replaced ? `, replaced the previous entry for key "${result.entry.key ?? ""}"` : ""
+          const dropped = result.dropped > 0 ? `, dropped ${result.dropped} oldest unpinned entry(ies)` : ""
+          return {
+            content: `Recorded in the folder memory of ${where} as ${result.entry.id} (${result.total} entries${replaced}${dropped}).`,
+            metadata: { id: result.entry.id, duplicate: false, total: result.total },
+          }
+        } catch (cause) {
+          return { content: errorText(cause) }
+        }
+      },
+    })
+
+    editor.add({
+      name: "memory_read",
+      description:
+        "Read the long-term memory of this folder: durable facts, decisions and conventions recorded by the sessions that " +
+        "worked here. Search it by text or tags before rediscovering something, or to find out what an earlier session " +
+        "decided. The most recent entries are also injected in your context.",
+      input: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Case-insensitive text to look for in the entries." },
+          tags: {
+            type: "array",
+            items: { type: "string" },
+            description: "Only return entries carrying all these tags.",
+          },
+          limit: {
+            type: "number",
+            description: `How many entries to return, 1 to 100. Defaults to ${deps.options.activityLines * 2}.`,
+          },
+        },
+        additionalProperties: false,
+      },
+      execute: async (raw) => {
+        const input = (raw ?? {}) as MemoryReadInput
+        const where = deps.ctx.location.directory
+        const all = deps.memory.all()
+        if (all.length === 0) {
+          return { content: `The folder memory of ${where} is empty. Record what matters with memory_write as you work.` }
+        }
+        const tags = (Array.isArray(input.tags) ? input.tags : []).map((tag) => String(tag).trim()).filter(Boolean)
+        const limit = clamp(input.limit, 1, 100, deps.options.activityLines * 2)
+        const entries = selectEntries(all, input.query, tags, limit)
+        if (entries.length === 0) {
+          return {
+            content: `No entry matches in the ${all.length} entries of ${where}. Call memory_read without a query to see them all.`,
+          }
+        }
+        const filter = [input.query ? `query "${input.query}"` : "", tags.length ? `tags ${tags.join(", ")}` : ""]
+          .filter(Boolean)
+          .join(", ")
+        return {
+          content: [
+            `Folder memory of ${where}: ${entries.length} of ${all.length} entries${filter ? ` (${filter})` : ""}, pinned first then most recent.`,
+            ...entries.map((entry) => `- ${describeEntry(entry, 400)}`),
+            "Record more with memory_write, drop a wrong entry with memory_forget(target=<id>).",
+          ].join("\n"),
+          metadata: { total: all.length, returned: entries.length, ids: entries.map((entry) => entry.id) },
+        }
+      },
+    })
+
+    editor.add({
+      name: "memory_forget",
+      description:
+        "Drop an entry from the long-term memory of this folder: a fact that became false, a duplicate, a note recorded by " +
+        "mistake. Give the id shown by memory_read, the key it was written with, or a fragment of its text — as long as it " +
+        "matches a single entry. Only do it when the user asks, or when the entry is provably wrong.",
+      input: {
+        type: "object",
+        properties: {
+          target: {
+            type: "string",
+            description:
+              "Entry id (mem_...), a unique id prefix, the key it was written with, or a fragment of its text.",
+          },
+        },
+        required: ["target"],
+        additionalProperties: false,
+      },
+      execute: async (raw) => {
+        const input = (raw ?? {}) as MemoryForgetInput
+        const target = String(input.target ?? "").trim()
+        if (!target) return { content: "Nothing was removed: no entry was given." }
+        const result = deps.memory.forget(target)
+        if ("error" in result) return { content: result.error }
+        const removed = result.removed[0] as MemoryEntry
+        log(`forgot memory entry ${removed.id} in ${deps.ctx.location.directory}`)
+        return {
+          content: `Removed ${removed.id} from the folder memory of ${deps.ctx.location.directory}: "${truncate(removed.text, 120)}". ${deps.memory.all().length} entries left.`,
+          metadata: { id: removed.id, removed: result.removed.length },
         }
       },
     })

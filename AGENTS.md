@@ -3,7 +3,8 @@
 OpenCode plugin, in two halves:
 
 - `index.ts` → `src/index.ts`: the **server** plugin. Sessions of the same folder discover each other, list
-  peers, send notes, ask questions, hand work over and inspect a peer's activity.
+  peers, send notes, ask questions, hand work over, inspect a peer's activity and share a long-term memory of
+  that folder.
 - `tui.tsx` → `src/tui.tsx`: the **CLI/TUI** plugin. Counter of linked sessions in the right sidebar, plus
   the `/peers` command.
 
@@ -17,9 +18,10 @@ Both entry files must stay at the repository root: the loader resolves a plugin 
 - `src/api.ts` — minimal `GET` client over that endpoint.
 - `src/peers.ts` — pure peer types, selection and formatting, shared by the server and the TUI half.
 - `src/registry.ts` — session discovery (`/api/session`, `/api/session/active`) with a short TTL cache.
-- `src/tools.ts` — the five tools: target resolution, permission assert, rate limit, hop counter, ask loop.
+- `src/tools.ts` — the eight tools: target resolution, permission assert, rate limit, hop counter, ask loop.
+- `src/memory.ts` — the folder's long-term memory: file layout, JSONL parsing, selection, cap.
 - `src/activity.ts` — the `peers_activity` report (transcript, tools, session diff, working copy).
-- `src/inject.ts` — `context` hook that appends the peer block to the system prompt.
+- `src/inject.ts` — `context` hook that appends the peer block and the memory block to the system prompt.
 - `src/envelope.ts` — the message a peer receives (header, kind, guidance) and its metadata contract.
 - `src/guards.ts` — hop counter and rate limit.
 - `src/options.ts` — option parsing with defaults.
@@ -45,6 +47,13 @@ Both entry files must stay at the repository root: the loader resolves a plugin 
   widens it to every checkout of the project.
 - OpenCode's default permission policy allows everything, so `permission: "ask"` only prompts when a
   `session.message` rule exists (see README).
+- The folder memory is one file per folder, `~/.opencode/session-bus/<sha1 of the folder>/memory.jsonl`, never
+  inside the project: a folder is a checkout, so worktrees do not share it. Writes append; a rewrite (key
+  replaced, cap reached, entry forgotten) always re-reads the file first and goes through `tmp + rename`, so a
+  second service working in the same folder cannot lose an append. `memory_read` and the injected block read
+  the same snapshot, cached for `cacheTtlSeconds`; `memory_write` and `memory_forget` always read from disk.
+- Nothing in this plugin may break a session, memory included: every file operation is wrapped and a failure
+  only warns once, then the folder behaves as if it had no memory.
 
 ## Checks
 
@@ -64,5 +73,8 @@ There is no test suite: verify against a live service.
 4. Two sessions in the same folder: `peers_list` sees the other one, `peers_send` lands as a `synthetic`
    message in the target session, `peers_ask` returns the peer's answer, `peers_handoff` shows up as a
    handoff, `peers_activity` reports the peer's transcript and directory state.
-5. Test drivers used during development: `~/tmp/oc/bus-test*.py` (create sessions, prompt them, auto-approve
-   permission requests, dump transcripts).
+5. Memory: `memory_write` in one session shows up in `memory_read` and in the injected block of the next
+   session of the same folder; a `key` write replaces, `memory_forget` drops, and
+   `~/.opencode/session-bus/<sha1 of the folder>/memory.jsonl` holds exactly the surviving entries.
+6. Test drivers used during development: `~/tmp/oc/bus-test*.py` and `~/tmp/oc/mem-live-test.py` (create
+   sessions, prompt them, auto-approve permission requests, dump transcripts).

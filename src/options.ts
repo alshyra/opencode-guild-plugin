@@ -7,6 +7,10 @@ export interface SessionBusOptions {
   readonly delivery: "steer" | "queue"
   /** Inject the live peer list into the system prompt of every request. */
   readonly injectPeers: boolean
+  /** Long-term memory of the folder: memory_write / memory_read / memory_forget. */
+  readonly memory: boolean
+  /** Inject the folder memory into the system prompt of every request. */
+  readonly injectMemory: boolean
   /** Include peers that are idle for longer than the idle window. */
   readonly includeIdle: boolean
   /** Mirror plugin logs into ~/.local/state/opencode/session-bus.log. */
@@ -21,6 +25,12 @@ export interface SessionBusOptions {
   readonly askTimeoutSeconds: number
   /** Default number of entries peers_activity reports. */
   readonly activityLines: number
+  /** Default number of memory entries injected into the system prompt. */
+  readonly memoryInjectLines: number
+  /** Upper bound for the folder memory file. */
+  readonly memoryMaxEntries: number
+  /** Longest text a single memory entry may hold. */
+  readonly memoryMaxChars: number
 }
 
 export const defaultOptions: SessionBusOptions = {
@@ -28,6 +38,8 @@ export const defaultOptions: SessionBusOptions = {
   scope: "directory",
   delivery: "steer",
   injectPeers: true,
+  memory: true,
+  injectMemory: true,
   includeIdle: false,
   debug: false,
   idleWindowMinutes: 15,
@@ -38,6 +50,9 @@ export const defaultOptions: SessionBusOptions = {
   cacheTtlSeconds: 5,
   askTimeoutSeconds: 180,
   activityLines: 12,
+  memoryInjectLines: 5,
+  memoryMaxEntries: 500,
+  memoryMaxChars: 2000,
 }
 
 function pick<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
@@ -58,6 +73,8 @@ export function resolveOptions(raw: Readonly<Record<string, unknown>>): SessionB
     scope: pick(raw["scope"], ["project", "directory"] as const, defaultOptions.scope),
     delivery: pick(raw["delivery"], ["steer", "queue"] as const, defaultOptions.delivery),
     injectPeers: boolean(raw["injectPeers"], defaultOptions.injectPeers),
+    memory: boolean(raw["memory"], defaultOptions.memory),
+    injectMemory: boolean(raw["injectMemory"], defaultOptions.injectMemory),
     includeIdle: boolean(raw["includeIdle"], defaultOptions.includeIdle),
     debug: boolean(raw["debug"], defaultOptions.debug),
     idleWindowMinutes: positive(raw["idleWindowMinutes"], defaultOptions.idleWindowMinutes),
@@ -68,5 +85,8 @@ export function resolveOptions(raw: Readonly<Record<string, unknown>>): SessionB
     cacheTtlSeconds: positive(raw["cacheTtlSeconds"], defaultOptions.cacheTtlSeconds),
     askTimeoutSeconds: positive(raw["askTimeoutSeconds"], defaultOptions.askTimeoutSeconds),
     activityLines: positive(raw["activityLines"], defaultOptions.activityLines),
+    memoryInjectLines: positive(raw["memoryInjectLines"], defaultOptions.memoryInjectLines),
+    memoryMaxEntries: positive(raw["memoryMaxEntries"], defaultOptions.memoryMaxEntries),
+    memoryMaxChars: positive(raw["memoryMaxChars"], defaultOptions.memoryMaxChars),
   }
 }

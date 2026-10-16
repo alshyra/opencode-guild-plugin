@@ -5,11 +5,12 @@ import { join } from "node:path"
 import { createApi } from "./api"
 import { resolveEndpoint } from "./service"
 import { Registry } from "./registry"
+import { MemoryStore } from "./memory"
 import { isSessionID, type SessionLike } from "./peers"
 import { Guards } from "./guards"
 import { resolveOptions } from "./options"
 import { registerTools, type Deps } from "./tools"
-import { registerPeersContextHook } from "./inject"
+import { registerContextHook } from "./inject"
 import { registerSkill } from "./skill"
 import { enableDebug, debug, error, log, warn } from "./log"
 import type { Ctx, Registration } from "./types"
@@ -41,18 +42,25 @@ export default Plugin.define({
         maxPeers: Math.max(options.maxPeers, 20),
       },
     )
-    const deps: Deps = { ctx, registry, guards: new Guards(), options, api }
+    const memory = new MemoryStore(ctx.location.directory, {
+      maxEntries: options.memoryMaxEntries,
+      maxTextChars: options.memoryMaxChars,
+      ttlMs: options.cacheTtlSeconds * 1000,
+    })
+    const deps: Deps = { ctx, registry, guards: new Guards(), options, api, memory }
 
     const controller = new AbortController()
     void watchEvents(ctx, registry, controller.signal)
 
     const registrations: Registration[] = [
       await registerTools(ctx, deps),
-      await registerPeersContextHook(ctx, deps),
-      await registerSkill(ctx),
+      await registerContextHook(ctx, deps),
+      await registerSkill(ctx, options),
     ]
 
-    log(`ready (api ${endpoint.url}, permission ${options.permission}, scope ${options.scope})`)
+    log(
+      `ready (api ${endpoint.url}, permission ${options.permission}, scope ${options.scope}, memory ${options.memory ? "on" : "off"})`,
+    )
     debug(
       "tools",
       (await ctx.tool.list()).map((tool) => tool.id),
