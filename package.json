@@ -1,8 +1,8 @@
 {
-  "name": "opencode-session-bus",
+  "name": "opencode-guild",
   "version": "0.1.0",
   "private": true,
-  "description": "Let concurrent OpenCode sessions working on the same project discover and message each other.",
+  "description": "A guild of OpenCode sessions for one folder: peer messaging, delegation and a collective memory.",
   "type": "module",
   "exports": {
     ".": "./src/index.ts",

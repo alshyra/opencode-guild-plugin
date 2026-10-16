@@ -1,6 +1,6 @@
 import { appendFileSync } from "node:fs"
 
-const PREFIX = "[session-bus]"
+const PREFIX = "[guild]"
 
 let debugFile: string | undefined
 

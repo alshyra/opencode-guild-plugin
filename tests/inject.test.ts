@@ -93,7 +93,7 @@ describe("renderMemoryBlock", () => {
       ],
       view(),
     )
-    expect(block).toContain("[session-bus] Long-term memory of this folder — 2 entries")
+    expect(block).toContain("[guild] Long-term memory of this folder — 2 entries")
     expect(block).toContain("Topics recorded here: grafana (1), restore (1).")
     expect(block).toContain('memory_read(query="<keyword>")')
     expect(block).toContain("use them, and check anything that may have changed")

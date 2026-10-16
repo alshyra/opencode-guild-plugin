@@ -62,7 +62,7 @@ const peer = (overrides: Partial<Peer> & { id: string }): Peer => ({
 })
 
 const meta = (overrides: Partial<PeerMessageMeta> = {}): PeerMessageMeta => ({
-  bus: "session-bus",
+  bus: "guild",
   v: 1,
   from: "ses_aaaaaaaaaabbbbbbbbbb",
   fromTitle: "Session A",
@@ -407,7 +407,7 @@ describe("renderPeerMessage", () => {
 describe("isPeerMessage / stripPeerEnvelope", () => {
   const body = "Première ligne.\n\nDeuxième ligne."
 
-  test("recognises a session-bus message", () => {
+  test("recognises a guild message", () => {
     expect(isPeerMessage(renderPeerMessage(meta(), body, false))).toBe(true)
     expect(isPeerMessage(`  \n${MARKER} message from`)).toBe(true)
     expect(isPeerMessage("bonjour")).toBe(false)

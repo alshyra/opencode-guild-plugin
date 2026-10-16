@@ -142,9 +142,9 @@ export function normalizeTags(input: unknown, limit = MAX_TAGS): readonly string
   return tags
 }
 
-/** Root of the per-folder memory: `~/.opencode/session-bus/<hash>/`. */
+/** Root of the per-folder memory: `~/.opencode/guild/<hash>/`. */
 export function memoryRoot(home: string = homedir()): string {
-  return join(home, ".opencode", "session-bus")
+  return join(home, ".opencode", "guild")
 }
 
 /** Stable key for a working folder: the folder itself is the scope. */

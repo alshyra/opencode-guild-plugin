@@ -1,9 +1,9 @@
 import type { Ctx } from "./types"
 import type { SessionBusOptions } from "./options"
 
-export const SKILL_ID = "session-bus"
+export const SKILL_ID = "guild"
 
-const HEADER = `# Session bus
+const HEADER = `# Guild
 
 Several OpenCode sessions can work in the same project at the same time. This skill explains how to talk to them and how to share durable context with them.
 
@@ -65,7 +65,7 @@ export async function registerSkill(ctx: Ctx, options: SessionBusOptions) {
     description:
       "Work with the other OpenCode sessions of this folder: list them, send them notes, ask questions, hand work " +
       "over, inspect what they do, and read or write the durable memory shared by the sessions of this folder.",
-    path: "/session-bus/SKILL.md",
+    path: "/guild/SKILL.md",
     content: skillContent(options),
   }
   return ctx.skill.transform((editor) => {

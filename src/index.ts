@@ -17,19 +17,19 @@ import { enableDebug, debug, error, log, warn } from "./log"
 import type { Ctx, Registration } from "./types"
 
 export default Plugin.define({
-  id: "session-bus",
+  id: "guild",
 
   async setup(ctx) {
     const options = resolveOptions(ctx.options)
     const endpoint = resolveEndpoint()
     if (options.debug) {
       const state = process.env["XDG_STATE_HOME"] ?? join(homedir(), ".local", "state")
-      enableDebug(join(state, "opencode", "session-bus.log"))
+      enableDebug(join(state, "opencode", "guild.log"))
     }
     log(`loading in ${ctx.location.directory} (project ${ctx.location.project.id})`)
 
     if (!endpoint) {
-      warn("no OpenCode service registration file found: session-bus is disabled for this location")
+      warn("no OpenCode service registration file found: guild is disabled for this location")
       return
     }
 

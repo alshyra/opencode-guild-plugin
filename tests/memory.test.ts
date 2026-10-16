@@ -1,12 +1,12 @@
 /**
- * Offline unit suite for the folder-memory module of the session-bus plugin.
+ * Offline unit suite for the folder-memory module of the guild plugin.
  *
  * It drives `MemoryStore` and the pure helpers directly: no OpenCode service, no
  * model call, no network. Every case gets its own throwaway folder under the
  * system temp directory, and removes both that folder and the store it hashes
- * to (`~/.opencode/session-bus/<sha1 of the folder>/`).
+ * to (`~/.opencode/guild/<sha1 of the folder>/`).
  *
- * Run: cd /devops/home/asavajols/workspace/opencode-session-bus && bun test tests/memory.test.ts
+ * Run: cd /devops/home/asavajols/workspace/opencode-guild && bun test tests/memory.test.ts
  */
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs"
@@ -42,7 +42,7 @@ const sandboxes: string[] = []
 
 /** A throwaway working folder whose memory file belongs to this test alone. */
 function sandbox() {
-  const directory = mkdtempSync(join(tmpdir(), "session-bus-memory-"))
+  const directory = mkdtempSync(join(tmpdir(), "guild-memory-"))
   sandboxes.push(directory)
   const memoryDir = memoryDirectory(directory)
   return {
@@ -559,7 +559,7 @@ describe("formatting and helpers", () => {
     expect(directoryKey(first)).toBe(directoryKey(first))
     expect(directoryKey(first)).not.toBe(directoryKey(second))
     expect(directoryKey(first)).toMatch(/^[0-9a-f]{40}$/)
-    expect(memoryRoot()).toEndWith(join(".opencode", "session-bus"))
+    expect(memoryRoot()).toEndWith(join(".opencode", "guild"))
     expect(memoryDirectory(first)).toBe(join(memoryRoot(), directoryKey(first)))
     expect(memoryFile(first)).toBe(join(memoryDirectory(first), "memory.jsonl"))
   })

@@ -823,7 +823,7 @@ async function deliver(deps: Deps, input: DeliverInput): Promise<{ delivery: str
     )
   }
   if (!(await allowSend(deps, input.caller, input.peer))) {
-    throw new Error("sending to other sessions is disabled by the session-bus configuration")
+    throw new Error("sending to other sessions is disabled by the guild configuration")
   }
   const sender = await senderInfo(deps, input.caller.sessionID)
   const meta: PeerMessageMeta = {

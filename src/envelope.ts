@@ -1,5 +1,5 @@
-export const BUS_ID = "session-bus"
-export const MARKER = "[session-bus]"
+export const BUS_ID = "guild"
+export const MARKER = "[guild]"
 
 export type PeerMessageKind = "note" | "delegate" | "question"
 
@@ -65,7 +65,7 @@ export function isPeerMessage(text: string): boolean {
   return text.trimStart().startsWith(MARKER)
 }
 
-/** Drops the session-bus header of a received message, keeping the peer's own words. */
+/** Drops the guild header of a received message, keeping the peer's own words. */
 export function stripPeerEnvelope(text: string): string {
   const lines = text.split("\n")
   if (!isPeerMessage(text)) return text

@@ -22,10 +22,10 @@ const MAX_PEERS = 8
 const ACTIVITY_TTL_MS = 30_000
 /** A peer message stops showing as unread after this long, even without a click. */
 const UNREAD_WINDOW_MS = 15 * 60_000
-const STORE_KEY = "session-bus"
-const SEEN_KEY = "session-bus.seen"
+const STORE_KEY = "guild"
+const SEEN_KEY = "guild.seen"
 /** Last peer message already announced to the human, so one arrival notifies once. */
-const NOTIFIED_KEY = "session-bus.notified"
+const NOTIFIED_KEY = "guild.notified"
 /**
  * Skip reasons that only mean "nothing was shown because of the focus state":
  * the arrival is not recorded as announced, so the next refresh tries again and
@@ -48,12 +48,12 @@ interface MemoryGauge {
 }
 
 /**
- * TUI half of the session-bus plugin: a collapsible "Linked sessions" block in
+ * TUI half of the guild plugin: a collapsible "Linked sessions" block in
  * the right sidebar. The title toggles it, a line opens that session's tab, and
  * a click marks the peer's messages as read.
  */
 export default Plugin.define({
-  id: "session-bus.tui",
+  id: "guild.tui",
 
   setup(context) {
     const options = resolveOptions(context.options)
@@ -193,7 +193,7 @@ export default Plugin.define({
       try {
         const result = await context.attention
           .notify({
-            title: "Session bus",
+            title: "Guild",
             message: `${peer.handle} "${short(peer.title, 40)}" wrote to you`,
             notification: true,
           })
@@ -354,10 +354,10 @@ export default Plugin.define({
         priority: 10,
         commands: [
           {
-            id: "session-bus.peers",
+            id: "guild.peers",
             title: "Linked sessions",
             description: "Other OpenCode sessions working in the same folder",
-            group: "Session bus",
+            group: "Guild",
             palette: true,
             slash: { name: "peers", aliases: ["sessions"] },
             run: async () => {
@@ -366,7 +366,7 @@ export default Plugin.define({
               const list = rows().filter((row) => row.peer.id !== self)
               if (list.length === 0) {
                 await context.ui.dialog.alert({
-                  title: "Session bus",
+                  title: "Guild",
                   message: "No other OpenCode session is working in this folder.",
                 })
                 return
@@ -384,10 +384,10 @@ export default Plugin.define({
             },
           },
           {
-            id: "session-bus.memory",
+            id: "guild.memory",
             title: "Folder memory",
             description: "Read the long-term memory of this folder",
-            group: "Session bus",
+            group: "Guild",
             palette: true,
             slash: { name: "memory", aliases: ["memoire"] },
             run: async () => {

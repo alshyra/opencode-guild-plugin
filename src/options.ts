@@ -15,7 +15,7 @@ export interface SessionBusOptions {
   readonly injectMemory: boolean
   /** Include peers that are idle for longer than the idle window. */
   readonly includeIdle: boolean
-  /** Mirror plugin logs into ~/.local/state/opencode/session-bus.log. */
+  /** Mirror plugin logs into ~/.local/state/opencode/guild.log. */
   readonly debug: boolean
   readonly idleWindowMinutes: number
   readonly maxPeers: number

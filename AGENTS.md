@@ -3,7 +3,7 @@
 OpenCode plugin, in two halves:
 
 - `index.ts` → `src/index.ts`: the **server** plugin. Sessions of the same folder discover each other, list
-  peers, send notes, ask questions, hand work over, inspect a peer's activity and share a long-term memory of
+  peers, send notes, ask questions, delegate work, inspect a peer's activity and share a long-term memory of
   that folder.
 - `tui.tsx` → `src/tui.tsx`: the **CLI/TUI** plugin. Counter of linked sessions in the right sidebar, plus
   the `/peers` command.
@@ -27,7 +27,7 @@ Both entry files must stay at the repository root: the loader resolves a plugin 
 - `src/envelope.ts` — the message a peer receives (header, kind, guidance) and its metadata contract.
 - `src/guards.ts` — hop counter and rate limit.
 - `src/options.ts` — option parsing with defaults.
-- `src/skill.ts` — the `session-bus` skill registered by the plugin.
+- `src/skill.ts` — the `guild` skill registered by the plugin.
 - `src/tui.tsx` — sidebar blocks: linked sessions and the memory gauge, plus the `/peers` and `/memory` commands.
 ## Rules
 
@@ -94,7 +94,7 @@ Both entry files must stay at the repository root: the loader resolves a plugin 
 - `#rewrite` archives by default because a rewrite is what can lose an entry. A reinforcement and a promotion
   pass `archive: false`: they only add weight or a flag, so `history/` keeps meaning "a state where something
   disappeared". A demotion archives.
-- The folder memory is one file per folder, `~/.opencode/session-bus/<sha1 of the folder>/memory.jsonl`, never
+- The folder memory is one file per folder, `~/.opencode/guild/<sha1 of the folder>/memory.jsonl`, never
   inside the project: a folder is a checkout, so worktrees do not share it. Writes append; a rewrite (key
   replaced, cap reached, entry forgotten) re-reads the file first and goes through `tmp + rename`. Within one
   service the store is fully synchronous, so two writes cannot interleave; across two services on the same host
@@ -126,16 +126,16 @@ running service, as below.
 1. Plugins load with the location; `location.reload` is not enough. Evict then re-open the location:
    `opencode api delete "/api/debug/location?location%5Bdirectory%5D=<dir>"` then
    `opencode api get "/api/location?location%5Bdirectory%5D=<dir>"`. `opencode service restart` covers everything.
-2. `opencode api get /api/plugin` → `session-bus` must be `active` with `features: { server: true, tui: true }`.
+2. `opencode api get /api/plugin` → `guild` must be `active` with `features: { server: true, tui: true }`.
    The TUI half itself only loads at TUI startup.
-3. With `debug: true`, `~/.local/state/opencode/session-bus.log` shows load, tool list, injections and deliveries.
+3. With `debug: true`, `~/.local/state/opencode/guild.log` shows load, tool list, injections and deliveries.
 4. Two sessions in the same folder: `peers_list` sees the other one, `peers_send` lands as a `synthetic`
    message in the target session, `peers_ask` returns the peer's answer, `peers_delegate` shows up as a
    delegation and its report wakes the requester, `peers_activity` reports the peer's transcript and
    directory state.
 5. Memory: `memory_write` in one session shows up in `memory_read` and in the injected block of the next
    session of the same folder; a `key` write replaces, `memory_forget` drops, and
-   `~/.opencode/session-bus/<sha1 of the folder>/memory.jsonl` holds exactly the surviving entries.
+   `~/.opencode/guild/<sha1 of the folder>/memory.jsonl` holds exactly the surviving entries.
 6. Compression: run `memory_compress` in a folder seeded with near-duplicates and two pinned entries; the
    pinned ones must survive verbatim, `history/` must hold the byte-identical previous file, and a `dry_run`
    must leave the file untouched. The refusal branches (model failure, invalid JSON, no gain, nothing to

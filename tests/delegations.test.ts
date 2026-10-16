@@ -88,7 +88,7 @@ describe("Delegations", () => {
 
 describe("delegation envelope", () => {
   const base: PeerMessageMeta = {
-    bus: "session-bus",
+    bus: "guild",
     v: 1,
     from: "ses_peer",
     fromTitle: "peer",
