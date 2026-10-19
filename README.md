@@ -48,6 +48,16 @@ re-export `src/*`. See the [plugins guide](https://opencode.ai/v2/docs/build/plu
 Reload the location, or restart the service (`opencode service restart`). The TUI half needs a TUI restart
 (quit and reopen `opencode`).
 
+### Compatibility
+
+| OpenCode host | Plugin |
+| --- | --- |
+| >= 2.0.29 | works |
+| <= 2.0.28 | runs, but the permission-gated tools fail: `deps.ctx.permission.assert is not a function` |
+
+The gate covers `peers_send`, `peers_ask`, `peers_delegate` and the elevation of a memory entry. On an older
+host, `permission: "allow"` delivers peer messages without the prompt; a memory elevation always asks.
+
 ### Activation
 
 Plugins are read when a location is loaded, not on `location.reload`. To pick up a change without restarting
