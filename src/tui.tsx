@@ -12,7 +12,7 @@ import {
   selectPeers,
 } from "./peers"
 import { gaugeLine, isStale, memoryFile, parseEntries, selectEntries, type MemoryGauge } from "./memory"
-import { truncate } from "./log"
+import { debug, truncate } from "./log"
 import { resolveOptions } from "./options"
 
 const REFRESH_MS = 15_000
@@ -49,6 +49,11 @@ export default Plugin.define({
 
   setup(context) {
     const options = resolveOptions(context.options)
+    debug("tui: options", {
+      memory: options.memory,
+      injectMemory: options.injectMemory,
+      tuiPeers: options.tuiPeers,
+    })
     const [rows, setRows] = createSignal<readonly Row[]>([])
     const [gauge, setGauge] = createSignal<MemoryGauge | undefined>()
     const [hovered, setHovered] = createSignal<string | undefined>()
