@@ -11,7 +11,7 @@ import {
   lastToolUse,
   selectPeers,
 } from "./peers"
-import { isStale, memoryFile, parseEntries, selectEntries } from "./memory"
+import { gaugeLine, isStale, memoryFile, parseEntries, selectEntries, type MemoryGauge } from "./memory"
 import { truncate } from "./log"
 import { resolveOptions } from "./options"
 
@@ -37,14 +37,6 @@ interface Row {
   readonly peer: Peer
   readonly activity?: string
   readonly unread: boolean
-}
-
-interface MemoryGauge {
-  readonly total: number
-  readonly pinned: number
-  readonly injected: number
-  readonly stale: number
-  readonly max: number
 }
 
 /**
@@ -333,9 +325,10 @@ export default Plugin.define({
                       ui.memoryExpanded ? "▾" : "▸"
                     } Folder memory`}</text>
                     <Show when={ui.memoryExpanded}>
-                      <text fg={memoryColor()}>{`   ${bar(memory().total, memory().max)}  ${
-                        memory().pinned
-                      } pinned · ${memory().injected} in prompt${memory().stale > 0 ? ` · ${memory().stale} stale` : ""}`}</text>
+                      <text fg={memoryColor()}>{`   ${bar(memory().total, memory().max)}  ${gaugeLine(
+                        memory(),
+                        options.injectMemory,
+                      )}`}</text>
                     </Show>
                   </box>
                 )}

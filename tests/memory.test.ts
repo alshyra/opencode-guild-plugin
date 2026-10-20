@@ -27,11 +27,13 @@ import {
   memoryFile,
   memoryRoot,
   memoryWeight,
+  gaugeLine,
   normalize,
   parseEntries,
   selectEntries,
   summarizeEntry,
   type MemoryEntry,
+  type MemoryGauge,
   type MemoryOptions,
 } from "../src/memory.ts"
 
@@ -580,5 +582,21 @@ describe("history archives", () => {
     for (const name of archives) {
       expect(readFileSync(join(box.history, name), "utf8").trim().length).toBeGreaterThan(0)
     }
+  })
+})
+
+describe("sidebar gauge", () => {
+  const gauge: MemoryGauge = { total: 10, pinned: 1, injected: 5, stale: 2, max: 500 }
+
+  test("announces what a request really reads when injection is on", () => {
+    expect(gaugeLine(gauge, true)).toBe("1 pinned · 5 in prompt · 2 stale")
+  })
+
+  test("does not claim an injection when another plugin owns the recall", () => {
+    expect(gaugeLine(gauge, false)).toBe("1 pinned · 10 in store, not injected · 2 stale")
+  })
+
+  test("omits the stale counter when nothing is stale", () => {
+    expect(gaugeLine({ ...gauge, stale: 0 }, false)).toBe("1 pinned · 10 in store, not injected")
   })
 })

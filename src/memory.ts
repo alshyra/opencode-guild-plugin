@@ -522,6 +522,27 @@ export function selectEntries(
     .slice(0, limit)
 }
 
+/** What the TUI sidebar reports about the store and what a request actually reads. */
+export interface MemoryGauge {
+  readonly total: number
+  readonly pinned: number
+  readonly injected: number
+  readonly stale: number
+  readonly max: number
+}
+
+/**
+ * One line for the sidebar. `injected` says whether the plugin puts memory into
+ * the prompt: when it does not (another plugin owns the recall), announcing
+ * "N in prompt" would be a lie, so the line reports the store size instead.
+ */
+export function gaugeLine(gauge: MemoryGauge, injected: boolean): string {
+  const parts = [`${gauge.pinned} pinned`]
+  parts.push(injected ? `${gauge.injected} in prompt` : `${gauge.total} in store, not injected`)
+  if (gauge.stale > 0) parts.push(`${gauge.stale} stale`)
+  return parts.join(" · ")
+}
+
 /** How many topics the injected block advertises. */
 export const MAX_TOPICS = 10
 
