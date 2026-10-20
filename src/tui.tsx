@@ -202,7 +202,7 @@ export default Plugin.define({
     }
 
     const refresh = async () => {
-      if (!directory) return
+      if (!directory || !options.tuiPeers) return
       if (!selfSessionID) {
         const current = context.ui.router.current()
         if (current.type === "session") selfSessionID = current.sessionID
@@ -272,7 +272,7 @@ export default Plugin.define({
         append: "sidebar.content",
         render: ({ sessionID }) => {
           selfSessionID = sessionID
-          const others = () => rows().filter((row) => row.peer.id !== sessionID)
+          const others = () => (options.tuiPeers ? rows().filter((row) => row.peer.id !== sessionID) : [])
           const label = () =>
             `${others().length === 1 ? "Linked session" : "Linked sessions"} (${others().length})`
           const memoryColor = () => {

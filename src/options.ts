@@ -9,6 +9,8 @@ export interface SessionBusOptions {
   readonly delivery: "steer" | "queue"
   /** Inject the live peer list into the system prompt of every request. */
   readonly injectPeers: boolean
+  /** Show the linked sessions in the sidebar (the peer tools stay available). */
+  readonly tuiPeers: boolean
   /** Long-term memory of the folder: memory_write / memory_read / memory_forget. */
   readonly memory: boolean
   /** Inject the folder memory into the system prompt of every request. */
@@ -48,6 +50,7 @@ export const defaultOptions: SessionBusOptions = {
   scope: "directory",
   delivery: "steer",
   injectPeers: true,
+  tuiPeers: true,
   memory: true,
   injectMemory: true,
   includeIdle: false,
@@ -92,6 +95,7 @@ export function resolveOptions(raw: Readonly<Record<string, unknown>>): SessionB
     scope: pick(raw["scope"], ["project", "directory"] as const, defaultOptions.scope),
     delivery: pick(raw["delivery"], ["steer", "queue"] as const, defaultOptions.delivery),
     injectPeers: boolean(raw["injectPeers"], defaultOptions.injectPeers),
+    tuiPeers: boolean(raw["tuiPeers"], defaultOptions.tuiPeers),
     memory: boolean(raw["memory"], defaultOptions.memory),
     injectMemory: boolean(raw["injectMemory"], defaultOptions.injectMemory),
     includeIdle: boolean(raw["includeIdle"], defaultOptions.includeIdle),

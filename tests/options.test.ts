@@ -19,6 +19,12 @@ describe("resolveOptions", () => {
     expect(options.memoryPromoteAfter).toBe(3)
   })
 
+  test("the sidebar can hide the peer list without touching the peer tools", () => {
+    expect(resolveOptions({}).tuiPeers).toBe(true)
+    expect(resolveOptions({ tuiPeers: false }).tuiPeers).toBe(false)
+    expect(resolveOptions({ tuiPeers: false }).injectPeers).toBe(true)
+  })
+
   test("0 is a meaningful value for the memory switches", () => {
     const options = resolveOptions({ memoryHalfLifeDays: 0, memoryStaleDays: 0, memoryCompressAfter: 0 })
     expect(options.memoryHalfLifeDays).toBe(0)
