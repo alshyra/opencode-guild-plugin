@@ -5,8 +5,15 @@ liste des plugins actifs mais pas leurs `options`, donc une sidebar chargée via
 tourne toujours avec les valeurs par défaut. Quand un autre plugin porte déjà la sidebar, mieux
 vaut ne pas en charger une seconde.
 
-Pour la réactiver : remettre `"./tui": "./src/tui.tsx"` dans `exports` (et, si les options doivent
-compter, déclarer le paquet dans `~/.config/opencode/cli.json` avec ses `options`).
+Le CLI découvre une TUI par convention : un fichier `tui.tsx` à la racine du paquet (pas via
+`exports`). Pour la réactiver, recréer ce shim d'une ligne :
+
+```ts
+export { default } from "./src/tui.tsx"
+```
+
+et, si les options doivent compter, déclarer le paquet dans `~/.config/opencode/cli.json` avec
+ses `options` — le CLI ne reçoit pas celles d'`opencode.jsonc`.
 
 # opencode-guild
 
