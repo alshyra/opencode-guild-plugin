@@ -5,8 +5,7 @@
   "description": "A guild of OpenCode sessions for one folder: peer messaging, delegation and a collective memory.",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
-    "./tui": "./src/tui.tsx"
+    ".": "./src/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

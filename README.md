@@ -1,3 +1,13 @@
+## TUI (désactivée par défaut)
+
+La moitié TUI (sidebar « Linked sessions » + panneau mémoire) n'est **pas exportée** : le CLI charge la
+liste des plugins actifs mais pas leurs `options`, donc une sidebar chargée via `opencode.jsonc`
+tourne toujours avec les valeurs par défaut. Quand un autre plugin porte déjà la sidebar, mieux
+vaut ne pas en charger une seconde.
+
+Pour la réactiver : remettre `"./tui": "./src/tui.tsx"` dans `exports` (et, si les options doivent
+compter, déclarer le paquet dans `~/.config/opencode/cli.json` avec ses `options`).
+
 # opencode-guild
 
 A guild of concurrent OpenCode sessions for one folder: they see each other, exchange notes, ask questions,
